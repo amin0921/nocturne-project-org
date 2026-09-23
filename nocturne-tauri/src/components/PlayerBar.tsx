@@ -24,7 +24,7 @@ import { VinylOrbit } from './VinylOrbit'
 import { Marquee } from './Marquee'
 import { PlayPauseButton } from './PlayPauseButton'
 import { FavoriteButton } from './FavoriteButton'
-import { VolumeCapsule } from './VolumeCapsule'
+import { DetentKnob } from './controls/DetentKnob'
 
 export interface PlayerBarProps {
   onOpenCoverView?: () => void
@@ -48,7 +48,7 @@ export default function PlayerBar({ onOpenCoverView }: PlayerBarProps = {}): JSX
 
   return (
     <div
-      className="flex h-16 w-full items-center justify-between gap-3 px-4 md:px-5 select-none"
+      className="flex min-h-[64px] w-full items-center justify-between gap-3 px-4 md:px-5 py-1 select-none"
       aria-label="Playback controls"
     >
       {/* Playback Controls (Shuffle, Prev, Play/Pause, Next, Repeat) */}
@@ -218,8 +218,8 @@ export default function PlayerBar({ onOpenCoverView }: PlayerBarProps = {}): JSX
           <FavoriteButton trackId={currentTrack.id} />
         )}
 
-        {/* Category 4: Morphing Floating Volume Capsule */}
-        <VolumeCapsule />
+        {/* Category 4: Studio Detent Volume Knob (21 magnetic stops, 270° arc) */}
+        <DetentKnob />
       </div>
     </div>
   )

@@ -31,6 +31,7 @@ import {
   type PlayerTrack
 } from './stores/usePlayerStore'
 import { cn, formatTime } from './lib/utils'
+import { useStudioHotkeys } from './hooks/useStudioHotkeys'
 import {
   MINI_PINNED_STORAGE_KEY,
   MINI_POSITION_STORAGE_KEY
@@ -227,6 +228,10 @@ export default function App(): JSX.Element {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [setView])
+
+  // Studio transport hotkeys: Space / Arrow±5s / L (lyrics) / M (mute),
+  // with a typing-focus guard so the library search field stays untouched.
+  useStudioHotkeys()
 
   const [query, setQuery] = useState('')
 

@@ -1,4 +1,4 @@
-import React, { useId, useRef, useState, useCallback } from 'react'
+import React, { useId, useRef, useState, useCallback, useEffect } from 'react'
 import { formatTime } from '../types/player'
 import { cn } from '../lib/utils'
 
@@ -35,7 +35,15 @@ export function WaveformSeeker({
   const [hoverRatio, setHoverRatio] = useState<number | null>(null)
   const [scrubbing, setScrubbing] = useState(false)
   const svgRef = useRef<SVGSVGElement>(null)
+  const sliderRef = useRef<HTMLDivElement>(null)
   const labelId = useId()
+
+  // Live-value refs so the non-passive wheel listener binds once (zero
+  // re-attachment churn per playback tick → no scrub hitching).
+  const liveRef = useRef({ currentTime, duration, onSeek })
+  useEffect(() => {
+    liveRef.current = { currentTime, duration, onSeek }
+  })
 
   const idle = !peaks || peaks.length === 0
   const bars = peaks && peaks.length > 0 ? peaks : Array.from({ length: BAR_COUNT }, () => 0.5)
@@ -93,19 +101,38 @@ export function WaveformSeeker({
     }
   }
 
+  // Tactile wheel scrubbing: ±2s per notch over the scrubber. Bound with
+  // { passive: false } so preventDefault actually suppresses page scroll
+  // (React's synthetic onWheel is passive in Chromium and cannot).
+  useEffect(() => {
+    const el = sliderRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault()
+      const { currentTime: t, duration: d, onSeek: seek } = liveRef.current
+      if (!d || d <= 0) return
+      const delta = e.deltaY < 0 ? 2 : -2
+      const target = Math.min(d, Math.max(0, t + delta))
+      seek(target / d)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
   return (
     <div className={cn('group relative w-full select-none flex items-center', className)}>
       {/* hover / scrub timestamp bubble */}
-      {previewRatio !== null && duration > 0 && (
+      {previewRatio !== null && (
         <div
-          className="numeric font-mono tabular-nums pointer-events-none absolute -top-8 z-30 -translate-x-1/2 rounded-md border border-white/10 bg-[#121419] px-2 py-0.5 text-[11px] font-semibold text-[#EAB308] shadow-lg shadow-black/80"
-          style={{ left: `${Math.max(4, Math.min(96, previewRatio * 100))}%` }}
+          className="numeric pointer-events-none absolute -top-8 z-20 -translate-x-1/2 rounded-md border border-white/10 bg-[#0D0F15] px-2 py-0.5 text-[11px] font-mono text-amber-400 shadow-xl"
+          style={{ left: `${previewRatio * 100}%` }}
         >
           {formatTime(previewRatio * duration)}
         </div>
       )}
 
       <div
+        ref={sliderRef}
         role="slider"
         tabIndex={0}
         aria-labelledby={labelId}
@@ -115,11 +142,23 @@ export function WaveformSeeker({
         aria-valuetext={`${formatTime(currentTime)} of ${formatTime(duration)}`}
         aria-orientation="horizontal"
         onKeyDown={(e) => {
-          const step = duration > 0 ? 5 / duration : 0.05
-          if (e.key === 'ArrowRight') onSeek(Math.min(1, progress + step))
-          else if (e.key === 'ArrowLeft') onSeek(Math.max(0, progress - step))
-          else if (e.key === 'Home') onSeek(0)
-          else if (e.key === 'End') onSeek(1)
+          // Owned by the slider while focused — stop bubbling so the global
+          // studio hotkeys (window listener) never double-seek ±5s.
+          if (e.key === 'ArrowRight') {
+            e.stopPropagation()
+            const step = duration > 0 ? 5 / duration : 0.05
+            onSeek(Math.min(1, progress + step))
+          } else if (e.key === 'ArrowLeft') {
+            e.stopPropagation()
+            const step = duration > 0 ? 5 / duration : 0.05
+            onSeek(Math.max(0, progress - step))
+          } else if (e.key === 'Home') {
+            e.stopPropagation()
+            onSeek(0)
+          } else if (e.key === 'End') {
+            e.stopPropagation()
+            onSeek(1)
+          }
         }}
         className="w-full cursor-pointer rounded-xl focus:outline-none focus-visible:ring-1 focus-visible:ring-[#EAB308]/40 py-1"
       >

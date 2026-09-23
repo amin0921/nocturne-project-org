@@ -34,13 +34,14 @@ export function CenterIsland({
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
   const [imgError, setImgError] = useState(false)
-  const [isLyricsExpanded, setIsLyricsExpanded] = useState(false)
+  const isLyricsExpanded = useUIStore((s) => s.lyricsOpen)
+  const setLyricsOpen = useUIStore((s) => s.setLyricsOpen)
   const ambientPalette = useAmbientPalette()
 
   useEffect(() => {
     setImgError(false)
-    setIsLyricsExpanded(false)
-  }, [currentTrack?.id, currentTrack?.coverUrl])
+    setLyricsOpen(false)
+  }, [currentTrack?.id, currentTrack?.coverUrl, setLyricsOpen])
 
   const coverSrc = !imgError ? resolveCoverUrl(currentTrack?.coverUrl) : undefined
 
@@ -85,7 +86,7 @@ export function CenterIsland({
             {/* Apple-Style Dynamic Island Synced Lyrics */}
             <DynamicIslandLyrics
               isExpanded={isLyricsExpanded}
-              onExpandChange={setIsLyricsExpanded}
+              onExpandChange={setLyricsOpen}
             />
 
             {/* Split-Stage Motion Container: artwork + reflection + track info glide

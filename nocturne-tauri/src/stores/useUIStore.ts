@@ -11,6 +11,9 @@ export interface UIState {
   toggleQueue: () => void
   rightTab: RightPanelTab
   setRightTab: (tab: RightPanelTab) => void
+  lyricsOpen: boolean
+  setLyricsOpen: (open: boolean) => void
+  toggleLyrics: () => void
 }
 
 const STORAGE_KEY = 'nocturne-ui'
@@ -30,10 +33,11 @@ function getInitialView(): ViewMode {
   return 'stage'
 }
 
-let snapshot: { view: ViewMode; queueOpen: boolean; rightTab: RightPanelTab } = {
+let snapshot: { view: ViewMode; queueOpen: boolean; rightTab: RightPanelTab; lyricsOpen: boolean } = {
   view: getInitialView(),
   queueOpen: false,
-  rightTab: 'queue'
+  rightTab: 'queue',
+  lyricsOpen: false
 }
 
 const listeners = new Set<() => void>()
@@ -63,6 +67,14 @@ const actions = {
   setRightTab: (rightTab: RightPanelTab): void => {
     snapshot = { ...snapshot, rightTab }
     emitChange()
+  },
+  setLyricsOpen: (lyricsOpen: boolean): void => {
+    snapshot = { ...snapshot, lyricsOpen }
+    emitChange()
+  },
+  toggleLyrics: (): void => {
+    snapshot = { ...snapshot, lyricsOpen: !snapshot.lyricsOpen }
+    emitChange()
   }
 }
 
@@ -71,10 +83,13 @@ function getFullState(): UIState {
     view: snapshot.view,
     queueOpen: snapshot.queueOpen,
     rightTab: snapshot.rightTab,
+    lyricsOpen: snapshot.lyricsOpen,
     setView: actions.setView,
     setQueueOpen: actions.setQueueOpen,
     toggleQueue: actions.toggleQueue,
-    setRightTab: actions.setRightTab
+    setRightTab: actions.setRightTab,
+    setLyricsOpen: actions.setLyricsOpen,
+    toggleLyrics: actions.toggleLyrics
   }
 }
 
