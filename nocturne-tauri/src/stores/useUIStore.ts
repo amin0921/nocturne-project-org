@@ -1,0 +1,93 @@
+import { useSyncExternalStore } from 'react'
+
+export type ViewMode = 'stage' | 'library'
+export type RightPanelTab = 'queue' | 'specs'
+
+export interface UIState {
+  view: ViewMode
+  setView: (v: ViewMode) => void
+  queueOpen: boolean
+  setQueueOpen: (open: boolean) => void
+  toggleQueue: () => void
+  rightTab: RightPanelTab
+  setRightTab: (tab: RightPanelTab) => void
+}
+
+const STORAGE_KEY = 'nocturne-ui'
+
+function getInitialView(): ViewMode {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed.view === 'stage' || parsed.view === 'library') {
+        return parsed.view
+      }
+    }
+  } catch {
+    // fallback to stage
+  }
+  return 'stage'
+}
+
+let snapshot: { view: ViewMode; queueOpen: boolean; rightTab: RightPanelTab } = {
+  view: getInitialView(),
+  queueOpen: false,
+  rightTab: 'queue'
+}
+
+const listeners = new Set<() => void>()
+
+function emitChange(): void {
+  listeners.forEach((l) => l())
+}
+
+const actions = {
+  setView: (view: ViewMode): void => {
+    snapshot = { ...snapshot, view }
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ view }))
+    } catch {
+      // ignore storage errors
+    }
+    emitChange()
+  },
+  setQueueOpen: (queueOpen: boolean): void => {
+    snapshot = { ...snapshot, queueOpen }
+    emitChange()
+  },
+  toggleQueue: (): void => {
+    snapshot = { ...snapshot, queueOpen: !snapshot.queueOpen }
+    emitChange()
+  },
+  setRightTab: (rightTab: RightPanelTab): void => {
+    snapshot = { ...snapshot, rightTab }
+    emitChange()
+  }
+}
+
+function getFullState(): UIState {
+  return {
+    view: snapshot.view,
+    queueOpen: snapshot.queueOpen,
+    rightTab: snapshot.rightTab,
+    setView: actions.setView,
+    setQueueOpen: actions.setQueueOpen,
+    toggleQueue: actions.toggleQueue,
+    setRightTab: actions.setRightTab
+  }
+}
+
+export function useUIStore<T>(selector: (s: UIState) => T): T {
+  return useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    () => selector(getFullState())
+  )
+}
+
+useUIStore.getState = getFullState

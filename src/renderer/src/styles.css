@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: #0a0b0e;
+  color: #f2f3f5;
+}
+
+:focus-visible {
+  outline: 2px solid #f2f3f5;
+  outline-offset: 2px;
+}
+
+input[type='range'] {
+  accent-color: #eab308;
+}
+
+/* Playing-row equalizer: ember bars, paused state freezes mid-frame. */
+@keyframes nocturne-eq {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.eq-bar {
+  transform-origin: bottom;
+  animation: nocturne-eq 0.9s ease-in-out infinite;
+}
+
+.eq-paused .eq-bar {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eq-bar {
+    animation: none;
+  }
+}
