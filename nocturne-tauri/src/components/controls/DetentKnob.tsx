@@ -31,9 +31,13 @@ function tickCoords(index: number): { x1: number; y1: number; x2: number; y2: nu
 const TICK_GEOM = Array.from({ length: DETENTS }, (_, i) => tickCoords(i))
 
 /* ------------------------------------------------------------------ *
- * Micro-haptic audio tick — 2ms 2kHz sine at -30 dB (0.0316 linear),
- * native Web Audio only (zero npm deps), lazily unlocked on first use.
+ * Micro-haptic audio tick — ~7ms dual-harmonic mechanical latch click
+ * at peak 0.28 (~-11 dB) so it cuts through loud playback, native
+ * Web Audio only (zero npm deps), lazily unlocked on first use.
  * ------------------------------------------------------------------ */
+const TICK_PEAK = 0.28 // ~-11 dB — clearly audible over loud music
+const TICK_DECAY_S = 0.007 // 7ms body — machined latch/pawl click
+
 let tickCtx: AudioContext | null = null
 
 function playDetentTick(): void {
@@ -49,20 +53,44 @@ function playDetentTick(): void {
     if (ctx.state === 'suspended') {
       void ctx.resume().catch(() => undefined)
     }
-    const osc = ctx.createOscillator()
-    const gain = ctx.createGain()
     const t = ctx.currentTime
-    osc.type = 'sine'
-    osc.frequency.setValueAtTime(2000, t)
-    gain.gain.setValueAtTime(0.0316, t)
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.002)
-    osc.connect(gain)
+    const body = ctx.createOscillator() // primary resonant body
+    const bite = ctx.createOscillator() // bright metallic transient
+    const biteGain = ctx.createGain()
+    const gain = ctx.createGain()
+
+    // Body: 2100 Hz → 900 Hz sweep — pawl sliding into the detent.
+    body.type = 'sine'
+    body.frequency.setValueAtTime(2100, t)
+    body.frequency.exponentialRampToValueAtTime(900, t + TICK_DECAY_S)
+
+    // Transient: 3600 Hz → 1600 Hz triangle bite, faster decay for the
+    // crisp machined-aluminum "snap" of the latch engaging.
+    bite.type = 'triangle'
+    bite.frequency.setValueAtTime(3600, t)
+    bite.frequency.exponentialRampToValueAtTime(1600, t + 0.004)
+    biteGain.gain.setValueAtTime(0.35, t)
+    biteGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.004)
+
+    // Envelope: sub-ms attack to peak, clean exponential ramp to silence
+    // (0.0001 floor — no clicks/pops outside the sound itself).
+    gain.gain.setValueAtTime(0.0001, t)
+    gain.gain.exponentialRampToValueAtTime(TICK_PEAK, t + 0.0003)
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + TICK_DECAY_S)
+
+    body.connect(gain)
+    bite.connect(biteGain)
+    biteGain.connect(gain)
     gain.connect(ctx.destination)
-    osc.start(t)
-    osc.stop(t + 0.004)
-    osc.onended = () => {
+    body.start(t)
+    bite.start(t)
+    bite.stop(t + 0.005)
+    body.stop(t + TICK_DECAY_S + 0.001)
+    body.onended = () => {
       try {
-        osc.disconnect()
+        body.disconnect()
+        bite.disconnect()
+        biteGain.disconnect()
         gain.disconnect()
       } catch {
         // ignore
