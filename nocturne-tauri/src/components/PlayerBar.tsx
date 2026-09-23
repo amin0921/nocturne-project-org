@@ -88,7 +88,7 @@ export default function PlayerBar({ onOpenCoverView }: PlayerBarProps = {}): JSX
           <SkipBack size={17} aria-hidden />
         </Button>
 
-        {/* Category 1 Micro-Interaction: Smooth SVG Play/Pause morph */}
+        {/* Category 1 Micro-Interaction: solid single-path play / twin-bar pause glyph */}
         <PlayPauseButton
           isPlaying={isPlaying}
           onClick={() => void togglePlay()}
@@ -155,7 +155,7 @@ export default function PlayerBar({ onOpenCoverView }: PlayerBarProps = {}): JSX
         )}
         {hasTrack ? (
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            <span className="numeric w-10 shrink-0 text-right text-xs font-medium text-muted">
+            <span className="numeric font-mono tabular-nums w-10 shrink-0 text-right text-xs font-medium text-muted">
               {formatTime(currentTime)}
             </span>
             <WaveformSeeker
@@ -165,7 +165,7 @@ export default function PlayerBar({ onOpenCoverView }: PlayerBarProps = {}): JSX
               isPlaying={isPlaying}
               onSeek={(ratio) => seekTo(ratio * (duration ?? 0))}
             />
-            <span className="numeric w-10 shrink-0 text-left text-xs font-medium text-faint">
+            <span className="numeric font-mono tabular-nums w-10 shrink-0 text-left text-xs font-medium text-faint">
               {formatTime(duration)}
             </span>
           </div>

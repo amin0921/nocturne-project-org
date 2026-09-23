@@ -2,6 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ====================================================================
+ * Variable Studio Fonts — self-hosted WOFF2 (src/assets/fonts/).
+ * Bundled locally by Vite: zero external network dependency (MVP rule).
+ * ==================================================================== */
+
+@font-face {
+  font-family: 'Inter';
+  src: url('./assets/fonts/Inter-VariableFont_opsz,wght.woff2') format('woff2-variations'),
+    url('./assets/fonts/Inter-VariableFont_opsz,wght.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./assets/fonts/JetBrainsMono-VariableFont_wght.woff2') format('woff2-variations'),
+    url('./assets/fonts/JetBrainsMono-VariableFont_wght.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  src: url('./assets/fonts/PlusJakartaSans-VariableFont_wght.woff2') format('woff2-variations'),
+    url('./assets/fonts/PlusJakartaSans-VariableFont_wght.woff2') format('woff2');
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --background: #0a0b0e;
   --surface: #121419;
@@ -51,7 +83,10 @@ body::after,
 body {
   color: var(--foreground);
   overflow: hidden;
-  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   user-select: none;
 }
 
@@ -608,6 +643,88 @@ body::-webkit-scrollbar,
     transition: none !important;
     transform: none !important;
     filter: none !important;
+  }
+}
+
+/* ====================================================================
+ * Collapsed Dynamic Island — Zero-CPU Micro-Equalizer & Breathing Pulse
+ * Pure compositor keyframes (transform / opacity only on GPU layer;
+ * no JS rAF loops). Bars rest at scaleY(0.25) and settle smoothly on
+ * pause via transition; capsule pulse breathes only while playing.
+ * ==================================================================== */
+
+@keyframes eq-bar-1 {
+  0%,
+  100% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes eq-bar-2 {
+  0%,
+  100% {
+    transform: scaleY(0.8);
+  }
+  50% {
+    transform: scaleY(0.3);
+  }
+}
+
+@keyframes eq-bar-3 {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(0.9);
+  }
+}
+
+@keyframes capsule-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(234, 179, 8, 0);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 12px 1px rgba(234, 179, 8, 0.18);
+    border-color: rgba(234, 179, 8, 0.35);
+  }
+}
+
+.island-eq-bar {
+  transform-origin: bottom;
+  will-change: transform;
+  transform: scaleY(0.25);
+  transition: transform 400ms ease-in-out;
+}
+
+.island-eq-bar-1 {
+  animation: eq-bar-1 0.6s ease-in-out infinite;
+}
+
+.island-eq-bar-2 {
+  animation: eq-bar-2 0.75s ease-in-out infinite;
+}
+
+.island-eq-bar-3 {
+  animation: eq-bar-3 0.55s ease-in-out infinite;
+}
+
+.island-capsule-pulse {
+  will-change: box-shadow, border-color;
+  animation: capsule-pulse 3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .island-eq-bar-1,
+  .island-eq-bar-2,
+  .island-eq-bar-3,
+  .island-capsule-pulse {
+    animation: none !important;
   }
 }
 

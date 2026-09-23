@@ -170,7 +170,7 @@ export function AudioSpecsView({ className }: AudioSpecsViewProps): JSX.Element 
 
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="border border-[#EAB308]/40 bg-[#EAB308]/10 text-[#EAB308] text-[10px] font-bold px-2 py-0.5 rounded-full tracking-wider uppercase inline-flex items-center gap-1 shadow-[0_0_8px_rgba(234,179,8,0.15)]">
+              <span className="font-mono tabular-nums border border-[#EAB308]/40 bg-[#EAB308]/10 text-[#EAB308] text-[10px] font-bold px-2 py-0.5 rounded-full tracking-wider uppercase inline-flex items-center gap-1 shadow-[0_0_8px_rgba(234,179,8,0.15)]">
                 <ShieldCheck size={11} className="text-ember" />
                 {specs.badgeText}
               </span>
@@ -193,10 +193,10 @@ export function AudioSpecsView({ className }: AudioSpecsViewProps): JSX.Element 
           <span className="text-[10px] uppercase font-semibold tracking-wider text-faint">
             Format
           </span>
-          <span className="font-semibold text-ink truncate" title={specs.formatLabel}>
+          <span className="font-mono tabular-nums font-semibold text-ink truncate" title={specs.formatLabel}>
             {specs.formatLabel.split(' ')[0]}
           </span>
-          <span className="text-[10px] text-faint/70 truncate">
+          <span className="font-mono tabular-nums text-[10px] text-faint/70 truncate">
             {specs.container}
           </span>
         </div>
@@ -206,7 +206,7 @@ export function AudioSpecsView({ className }: AudioSpecsViewProps): JSX.Element 
           <span className="text-[10px] uppercase font-semibold tracking-wider text-faint">
             Sample Rate
           </span>
-          <span className="numeric font-semibold text-ember text-xs">
+          <span className="numeric font-mono tabular-nums font-semibold text-ember text-xs">
             {specs.sampleRate}
           </span>
           <span className="text-[10px] text-faint/70">
@@ -219,7 +219,7 @@ export function AudioSpecsView({ className }: AudioSpecsViewProps): JSX.Element 
           <span className="text-[10px] uppercase font-semibold tracking-wider text-faint">
             Bitrate / Depth
           </span>
-          <span className="numeric font-semibold text-ink truncate">
+          <span className="numeric font-mono tabular-nums font-semibold text-ink truncate">
             {specs.bitrateDepth}
           </span>
           <span className="text-[10px] text-faint/70">
@@ -232,7 +232,7 @@ export function AudioSpecsView({ className }: AudioSpecsViewProps): JSX.Element 
           <span className="text-[10px] uppercase font-semibold tracking-wider text-faint">
             Channels
           </span>
-          <span className="font-semibold text-ink">
+          <span className="font-mono tabular-nums font-semibold text-ink">
             {specs.channels}
           </span>
           <span className="text-[10px] text-faint/70">
@@ -249,7 +249,7 @@ export function AudioSpecsView({ className }: AudioSpecsViewProps): JSX.Element 
             Source File Path
           </span>
           {currentTrack.duration_secs && (
-            <span className="numeric text-faint lowercase font-normal">
+            <span className="numeric font-mono tabular-nums text-faint lowercase font-normal">
               {formatTime(currentTrack.duration_secs)}
             </span>
           )}
@@ -273,15 +273,15 @@ export function AudioSpecsView({ className }: AudioSpecsViewProps): JSX.Element 
         <div className="space-y-1.5 text-[11px]">
           <div className="flex items-center justify-between">
             <span className="text-faint">Output Interface</span>
-            <span className="text-ink font-medium">WebView2 Direct Audio</span>
+            <span className="font-mono tabular-nums text-ink font-medium">WebView2 Direct Audio</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-faint">DSP Graph</span>
-            <span className="text-ember font-medium">Bit-Perfect Passthrough</span>
+            <span className="font-mono tabular-nums text-ember font-medium">Bit-Perfect Passthrough</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-faint">Network Mode</span>
-            <span className="text-ink font-medium">100% Offline Local</span>
+            <span className="font-mono tabular-nums text-ink font-medium">100% Offline Local</span>
           </div>
         </div>
       </div>

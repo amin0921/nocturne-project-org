@@ -83,6 +83,7 @@ export function DynamicIslandLyrics({
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
+  const isPlaying = usePlayerStore((s) => s.isPlaying)
   const trackKey = currentTrack ? String(currentTrack.id ?? currentTrack.path ?? '') : null
 
   // Fine-tune calibration: per-track manual offset (seconds) applied on top of
@@ -150,6 +151,7 @@ export function DynamicIslandLyrics({
         isExpanded
           ? 'top-4 right-4 sm:right-6 w-[47%] max-w-[480px] h-[410px] rounded-[28px] border border-white/10 border-t-white/20 shadow-[0_24px_64px_rgba(0,0,0,0.85)]'
           : 'top-3 right-[calc(50%_-_68px)] w-[136px] h-9 rounded-[20px] border border-white/10 shadow-[0_8px_20px_rgba(0,0,0,0.6)] cursor-pointer hover:scale-[1.03] hover:border-white/20 active:scale-[0.98]',
+        isPlaying && !isExpanded && 'island-capsule-pulse',
         className
       )}
       style={{
@@ -185,6 +187,25 @@ export function DynamicIslandLyrics({
           <MicVocal size={13} className="text-[#EAB308] shrink-0" aria-hidden="true" />
           <span className="text-[10px] font-bold tracking-[0.2em] text-slate-300 uppercase shrink-0">
             LYRICS
+          </span>
+          {/* Zero-CPU 3-bar micro equalizer: pure CSS scaleY keyframes while
+              playing; rests at scaleY(0.25) when paused; fades out on expand. */}
+          <span
+            aria-hidden="true"
+            className={cn(
+              'flex h-[10px] shrink-0 items-end gap-[2px] transition-opacity duration-200',
+              isExpanded ? 'opacity-0' : 'opacity-100'
+            )}
+          >
+            {[1, 2, 3].map((bar) => (
+              <span
+                key={bar}
+                className={cn(
+                  'island-eq-bar w-[2px] h-[10px] rounded-full bg-amber-400/90',
+                  isPlaying && `island-eq-bar-${bar}`
+                )}
+              />
+            ))}
           </span>
         </div>
 

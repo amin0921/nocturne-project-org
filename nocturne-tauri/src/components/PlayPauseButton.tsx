@@ -11,8 +11,10 @@ export interface PlayPauseButtonProps {
 /**
  * PlayPauseButton Component
  * Category 1 Transport Micro-Interaction.
- * Smooth pure SVG dual-path vector morphing between Play triangle and twin Pause bars.
- * Supported by a circular luxury backing with amber glow feedback and zero layout shift.
+ * Play state: single continuous solid polygon (stroke="none") — no split
+ * paths, so no antialiasing seam can form down the triangle's middle.
+ * Pause state: two distinct vertical bars. Circular luxury backing with
+ * amber glow feedback and zero layout shift.
  */
 export function PlayPauseButton({
   isPlaying,
@@ -39,30 +41,28 @@ export function PlayPauseButton({
         className
       )}
     >
-      <svg
-        viewBox="0 0 24 24"
-        className="h-[18px] w-[18px] fill-current pointer-events-none select-none overflow-visible"
-        aria-hidden="true"
-      >
-        {/* Left half morphs from left triangle trapezoid to left pause bar */}
-        <path
-          className="play-pause-path"
-          d={
-            isPlaying
-              ? 'M 6 4 L 10 4 L 10 20 L 6 20 Z'
-              : 'M 7 4 L 13 7.5 L 13 16.5 L 7 20 Z'
-          }
-        />
-        {/* Right half morphs from right triangle tip to right pause bar */}
-        <path
-          className="play-pause-path"
-          d={
-            isPlaying
-              ? 'M 14 4 L 18 4 L 18 20 L 14 20 Z'
-              : 'M 13 7.5 L 19 12 L 19 12 L 13 16.5 Z'
-          }
-        />
-      </svg>
+      {isPlaying ? (
+        <svg
+          viewBox="0 0 24 24"
+          stroke="none"
+          className="h-[18px] w-[18px] fill-current pointer-events-none select-none overflow-visible"
+          aria-hidden="true"
+        >
+          {/* Pause: two distinct vertical bars */}
+          <path d="M 6 4 L 10 4 L 10 20 L 6 20 Z" />
+          <path d="M 14 4 L 18 4 L 18 20 L 14 20 Z" />
+        </svg>
+      ) : (
+        <svg
+          viewBox="0 0 24 24"
+          stroke="none"
+          className="h-[18px] w-[18px] fill-current text-black translate-x-0.5 pointer-events-none select-none overflow-visible"
+          aria-hidden="true"
+        >
+          {/* Play: one solid continuous triangle — zero internal seams */}
+          <polygon points="6 3 20 12 6 21 6 3" />
+        </svg>
+      )}
     </button>
   )
 }

@@ -126,7 +126,7 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
             {queue.length > 0 && (
               <span
                 className={cn(
-                  'numeric text-[9px] px-1 py-0.2 rounded-full tabular-nums font-semibold shrink-0 transition-colors',
+                  'numeric font-mono text-[9px] px-1 py-0.2 rounded-full tabular-nums font-semibold shrink-0 transition-colors',
                   activeTab === 'queue'
                     ? 'bg-[#EAB308]/25 text-[#EAB308]'
                     : 'bg-white/10 text-faint'
@@ -212,7 +212,7 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
                   >
                     <span
                       className={cn(
-                        'numeric w-5 shrink-0 text-center text-xs tabular-nums',
+                        'numeric font-mono w-5 shrink-0 text-center text-xs tabular-nums',
                         isActive ? 'font-bold text-ember' : 'text-faint'
                       )}
                     >
@@ -238,7 +238,7 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
 
                     <div className="flex items-center gap-2 shrink-0">
                       {isActive && <EqBars isPlaying={isPlaying} />}
-                      <span className="numeric text-[11px] tabular-nums text-faint">
+                      <span className="numeric font-mono text-[11px] tabular-nums text-faint">
                         {formatTime(track.duration_secs)}
                       </span>
                     </div>

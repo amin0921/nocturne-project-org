@@ -98,7 +98,7 @@ export function WaveformSeeker({
       {/* hover / scrub timestamp bubble */}
       {previewRatio !== null && duration > 0 && (
         <div
-          className="numeric pointer-events-none absolute -top-8 z-30 -translate-x-1/2 rounded-md border border-white/10 bg-[#121419] px-2 py-0.5 text-[11px] font-semibold text-[#EAB308] shadow-lg shadow-black/80"
+          className="numeric font-mono tabular-nums pointer-events-none absolute -top-8 z-30 -translate-x-1/2 rounded-md border border-white/10 bg-[#121419] px-2 py-0.5 text-[11px] font-semibold text-[#EAB308] shadow-lg shadow-black/80"
           style={{ left: `${Math.max(4, Math.min(96, previewRatio * 100))}%` }}
         >
           {formatTime(previewRatio * duration)}
