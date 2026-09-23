@@ -11,6 +11,12 @@
     "core:window:allow-close",
     "core:window:allow-destroy",
     "core:window:allow-start-dragging",
+    "core:window:allow-is-minimized",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-position",
+    "core:window:allow-set-focus",
+    "core:webview:allow-get-all-webviews",
     "dialog:default"
   ]
 }

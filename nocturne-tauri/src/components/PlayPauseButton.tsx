@@ -25,6 +25,7 @@ export function PlayPauseButton({
   return (
     <button
       type="button"
+      data-tauri-drag-region="false"
       onClick={onClick}
       disabled={disabled}
       title={isPlaying ? 'Pause' : 'Play'}

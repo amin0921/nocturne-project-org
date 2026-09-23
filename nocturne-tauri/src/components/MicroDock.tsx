@@ -33,7 +33,7 @@ export function MicroDock({
       role="toolbar"
       aria-orientation="vertical"
       className={cn(
-        'flex flex-col items-center gap-1.5 border border-white/10 bg-[#121419]/90 py-3 shadow-2xl backdrop-blur-xl select-none overflow-hidden',
+        'flex flex-col items-center gap-1.5 border border-white/10 bg-[#121419]/90 py-3 backdrop-blur-xl select-none overflow-hidden',
         'transition-[width,border-radius] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]',
         expanded ? 'w-44 rounded-3xl px-2' : 'w-14 rounded-full px-0',
         className

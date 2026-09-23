@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from 'react'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { audioController } from '../services/audio-controller'
+import { getPlayerChannel, type StateUpdateMessage } from '../services/player-broadcast'
 import { toAudioUrl } from '../utils/audio-url'
 
 export interface PlayerTrack {
@@ -64,9 +66,44 @@ let snapshot: PlayerSnapshot = {
 
 const listeners = new Set<Listener>()
 
+// The main window is the sole audio authority; the mini-island window never
+// loads this module (main.tsx demux), but guard anyway so a mis-import can't
+// broadcast from the wrong window or create a second audio element.
+let isMainWindow = true
+try {
+  isMainWindow = getCurrentWindow().label === 'main'
+} catch {
+  isMainWindow = true
+}
+
+/** Fan the current playback snapshot out to the mini-island window (~4Hz timeupdate cadence). */
+function broadcastState(): void {
+  if (!isMainWindow) return
+  const ch = getPlayerChannel()
+  if (!ch) return
+  const track = snapshot.currentTrack
+  const msg: StateUpdateMessage = {
+    type: 'STATE_UPDATE',
+    payload: {
+      isPlaying: snapshot.isPlaying,
+      currentTime: snapshot.currentTime,
+      duration: snapshot.duration,
+      track: track
+        ? { title: track.title, artist: track.artist, coverUrl: track.coverUrl }
+        : null
+    }
+  }
+  try {
+    ch.postMessage(msg)
+  } catch {
+    // Channel closed / structured-clone failure — mini simply misses an update.
+  }
+}
+
 function set(patch: Partial<PlayerSnapshot>): void {
   snapshot = { ...snapshot, ...patch }
   listeners.forEach((l) => l())
+  broadcastState()
 }
 
 function subscribe(listener: Listener): () => void {
@@ -206,8 +243,7 @@ export async function playTracks(tracks: PlayerTrack[], startIndex: number): Pro
 export async function playTrackAt(index: number): Promise<void> {
   ensureWiring()
   if (index < 0 || index >= snapshot.queue.length) return
-  // No-op guard if already playing this track
-  if (index === snapshot.index && snapshot.isPlaying) return
+  if (index === snapshot.index && snapshot.isPlaying && snapshot.currentTrack?.id === snapshot.queue[index]?.id) return
   resetFailures()
   await startAt(index)
 }
@@ -260,11 +296,15 @@ export function seekTo(seconds: number): void {
   set({ currentTime: audioController.getTime() })
 }
 
-export function setQueue(tracks: PlayerTrack[]): void {
+export function setQueue(tracks: PlayerTrack[], targetIndex?: number): void {
   ensureWiring()
-  // Keep the queue in sync with the library; preserve the current track when possible.
   const currentId = snapshot.currentTrack?.id
-  const index = currentId === undefined ? -1 : tracks.findIndex((t) => t.id === currentId)
+  const currentIndex = currentId === undefined ? -1 : tracks.findIndex((t) => t.id === currentId)
+  const index = targetIndex === undefined
+    ? currentIndex
+    : tracks.length === 0
+      ? -1
+      : Math.min(Math.max(0, targetIndex), tracks.length - 1)
   set({ queue: tracks, index })
 }
 
@@ -360,4 +400,29 @@ usePlayerStore.getState = () => ({
   toggleFavorite,
   isTrackFavorite
 })
+
+// Mini-island command bridge: the floating window posts COMMAND messages;
+// this listener (main window only) dispatches them to the real controls.
+if (isMainWindow) {
+  getPlayerChannel()?.addEventListener('message', (event: MessageEvent) => {
+    const msg = event.data
+    if (!msg || msg.type !== 'COMMAND') return
+    switch (msg.action) {
+      case 'togglePlay':
+        void togglePlay()
+        break
+      case 'next':
+        void next()
+        break
+      case 'prev':
+        void prev()
+        break
+      case 'seek':
+        if (typeof msg.payload === 'number' && Number.isFinite(msg.payload)) {
+          seekTo(msg.payload)
+        }
+        break
+    }
+  })
+}
 

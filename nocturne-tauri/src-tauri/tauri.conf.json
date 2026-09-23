@@ -28,6 +28,21 @@
         "decorations": false,
         "transparent": true,
         "shadow": false
+      },
+      {
+        "label": "mini-island",
+        "url": "index.html",
+        "title": "Nocturne Mini Island",
+        "visible": false,
+        "width": 360,
+        "height": 130,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false
       }
     ]
   },

@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { emit, listen } from '@tauri-apps/api/event'
+import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
+import { LogicalPosition, PhysicalPosition } from '@tauri-apps/api/dpi'
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { Copy, Disc3, Minus, Play, Square, Trash2, X } from 'lucide-react'
 import CoverFlowView from './components/CoverFlowView'
 import PlayerBar from './components/PlayerBar'
@@ -24,12 +26,15 @@ import {
   clearQueue,
   initPlayer,
   playTrackAt,
-  playTracks,
   setQueue,
   usePlayerStore,
   type PlayerTrack
 } from './stores/usePlayerStore'
 import { cn, formatTime } from './lib/utils'
+import {
+  MINI_PINNED_STORAGE_KEY,
+  MINI_POSITION_STORAGE_KEY
+} from './services/player-broadcast'
 
 function TableTrackThumbnail({ coverUrl, title }: { coverUrl?: string | null; title?: string }) {
   const [imgError, setImgError] = useState(false)
@@ -95,6 +100,100 @@ export default function App(): JSX.Element {
       active = false
       if (debounceTimer) clearTimeout(debounceTimer)
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {})
+    }
+  }, [])
+
+  // Step 79: floating mini-island visibility sync. Main minimized → show the
+  // mini pill (unless pinned flag disabled); restored/focused → hide it.
+  // Detection: isMinimized + onFocusChanged + debounced onResized (150ms).
+  useEffect(() => {
+    let active = true
+    const win = getCurrentWindow()
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
+    const isPinned = (): boolean => {
+      try {
+        return localStorage.getItem(MINI_PINNED_STORAGE_KEY) !== 'false'
+      } catch {
+        return true
+      }
+    }
+
+    const readStoredPosition = (): { x: number; y: number } | null => {
+      try {
+        const raw = localStorage.getItem(MINI_POSITION_STORAGE_KEY)
+        if (!raw) return null
+        const parsed: unknown = JSON.parse(raw)
+        if (
+          parsed !== null &&
+          typeof parsed === 'object' &&
+          typeof (parsed as { x?: unknown }).x === 'number' &&
+          typeof (parsed as { y?: unknown }).y === 'number'
+        ) {
+          const pos = parsed as { x: number; y: number }
+          return { x: pos.x, y: pos.y }
+        }
+      } catch {
+        // Malformed entry — fall through to default placement.
+      }
+      return null
+    }
+
+    const syncMiniIsland = async (): Promise<void> => {
+      if (!active) return
+      try {
+        const minimized = await win.isMinimized()
+        const mini = await WebviewWindow.getByLabel('mini-island')
+        if (!active || !mini) return
+        if (minimized && isPinned()) {
+          // Reveal signal BEFORE programmatic positioning: arms the mini's
+          // 600ms onMoved save-guard so this setPosition cannot overwrite the
+          // stored user coordinate, and queues the liquid-droplet entrance.
+          await emit('mini-island:reveal').catch(() => undefined)
+          const stored = readStoredPosition()
+          if (stored) {
+            await mini.setPosition(new PhysicalPosition(stored.x, stored.y))
+          } else {
+            // DPI-aware top-center anchor. screen.width is CSS-pixel/DPI-unaware
+            // and drifts under Windows display scaling — use the active window's
+            // monitor geometry instead: physical width / scaleFactor = logical px.
+            // x centers the 360px window; y docks 16px below the top edge.
+            const monitor = await currentMonitor()
+            const logicalWidth = monitor
+              ? monitor.size.width / monitor.scaleFactor
+              : window.screen.width
+            const x = Math.max(0, Math.round((logicalWidth - 360) / 2))
+            await mini.setPosition(new LogicalPosition(x, 16))
+          }
+          await mini.show()
+          // focus:false at creation — claim focus on appearance so the mini's
+          // Escape listener receives keydown without requiring a prior click.
+          await mini.setFocus()
+        } else {
+          await mini.hide()
+        }
+      } catch (err) {
+        console.debug('Mini-island visibility sync error:', err)
+      }
+    }
+
+    void syncMiniIsland()
+
+    const unlistenFocus = win.onFocusChanged(() => {
+      void syncMiniIsland()
+    })
+    const unlistenResize = win.onResized(() => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => {
+        void syncMiniIsland()
+      }, 150)
+    })
+
+    return () => {
+      active = false
+      if (debounceTimer) clearTimeout(debounceTimer)
+      unlistenFocus.then((unlisten) => unlisten()).catch(() => {})
+      unlistenResize.then((unlisten) => unlisten()).catch(() => {})
     }
   }, [])
 
@@ -428,10 +527,13 @@ export default function App(): JSX.Element {
           ariaLabel="Tracks"
           loading={scanning}
           loadingRowCount={6}
-          onRowClick={(track, index) => {
+          onRowClick={(track) => {
             if (track && track.missing !== 1) {
-              const activeList = filtered.length > 0 ? filtered : tracks
-              void playTracks(activeList, index)
+              const targetIndex = tracks.findIndex((item) => item.id === track.id)
+              if (targetIndex >= 0) {
+                setQueue(tracks, targetIndex)
+                void playTrackAt(targetIndex)
+              }
             }
           }}
           isRowActive={(track) => Boolean(track && track.id === currentTrackId)}
@@ -458,7 +560,7 @@ export default function App(): JSX.Element {
       <div className={cn('nocturne-shell text-ink select-none relative', isMaximized && 'is-maximized')}>
         {/* Floating Window Controls in top-right */}
         <div
-          className="absolute top-3 right-4 z-[60] flex items-center gap-1 rounded-xl border border-white/10 bg-[#121419]/90 px-1.5 py-1 shadow-lg backdrop-blur-xl pointer-events-auto"
+          className="absolute top-3 right-4 z-[60] flex items-center gap-1 rounded-xl border border-white/10 bg-[#121419]/90 px-1.5 py-1 backdrop-blur-xl pointer-events-auto"
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
         >

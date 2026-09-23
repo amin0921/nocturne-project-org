@@ -1,12 +1,12 @@
-import React, { useEffect, useRef, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { MicVocal } from 'lucide-react'
 import { usePlayerStore, seekTo } from '../stores/usePlayerStore'
-import { parseLrc, LyricLine } from '../utils/lrcParser'
+import { parseLrc, type LyricLine, type LyricWord } from '../utils/lrcParser'
 import { fetchLyricsOnline } from '../services/lyricsService'
 import { cn } from '../lib/utils'
 
-export type { LyricLine }
+export type { LyricLine, LyricWord }
 export { parseLrc }
 
 export interface LyricsPaneProps {
@@ -17,6 +17,42 @@ export interface LyricsPaneProps {
   manualOffset?: number
   className?: string
 }
+
+interface LyricLineRowProps {
+  line: LyricLine
+  isActive: boolean
+  onSeek: (time: number) => void
+}
+
+const LyricLineRow = React.memo(function LyricLineRow({
+  line,
+  isActive,
+  onSeek
+}: LyricLineRowProps): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={() => onSeek(line.time)}
+      className={cn(
+        'group w-full cursor-pointer py-1.5 px-3 rounded-xl text-left outline-none focus-visible:ring-1 focus-visible:ring-[#EAB308]',
+        'lyric-line-motion space-y-3 py-1.5 leading-snug origin-left',
+        isActive
+          ? 'lyric-line-active-solid text-xl md:text-2xl font-black scale-[1.06]'
+          : 'lyric-line-inactive text-base md:text-lg font-bold scale-100'
+      )}
+      aria-current={isActive ? 'true' : undefined}
+    >
+      <span dir="auto" className="inline-block max-w-full leading-snug">
+        {line.text || '•••'}
+      </span>
+    </button>
+  )
+}, (previous, next) => {
+  if (previous.isActive !== next.isActive) return false
+  if (previous.line.text !== next.line.text) return false
+  if (previous.line.time !== next.line.time) return false
+  return previous.onSeek === next.onSeek
+})
 
 /**
  * LyricsPane Component
@@ -157,16 +193,12 @@ export function LyricsPane({
     return idx
   }, [parsedLines, currentTime, manualOffset])
 
-  const activeLineRef = useRef<HTMLButtonElement | null>(null)
   const userScrollingRef = useRef(false)
   const scrollTimeoutRef = useRef<number | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const lastTimeRef = useRef(currentTime)
   const programmaticRef = useRef(false)
   const programmaticTimerRef = useRef<number | null>(null)
-  // Synchronous mirror of isDocked (refs aren't tracked by effects): while
-  // false (island mid-morph), centerActiveLine is a hard no-op so playback
-  // ticks / seeks can never force scrollIntoView layout before 420ms.
   const dockedRef = useRef(true)
 
   const unlockAutoScroll = () => {
@@ -177,8 +209,6 @@ export function LyricsPane({
     }
   }
 
-  // Marks the next burst of scroll events as programmatic so handleScroll
-  // never engages the manual-scroll guard for our own centering/reset calls.
   const beginProgrammaticScroll = () => {
     programmaticRef.current = true
     if (programmaticTimerRef.current !== null) {
@@ -190,11 +220,8 @@ export function LyricsPane({
   }
 
   const centerActiveLine = (behavior: ScrollBehavior = 'smooth') => {
-    // Transition-end gate: never force layout/scroll while the island's
-    // width/height are interpolating (the 420ms expand timer re-enables and
-    // performs the post-dock center itself).
     if (!dockedRef.current) return
-    const el = activeLineRef.current
+    const el = scrollContainerRef.current?.querySelector('button[aria-current="true"]') as HTMLButtonElement | null
     if (!el) return
     beginProgrammaticScroll()
     el.scrollIntoView({ behavior, block: 'center' })
@@ -274,7 +301,7 @@ export function LyricsPane({
   }
 
   // Handle click-to-seek navigation (seek to the calibrated line time)
-  const handleSeek = (time: number) => {
+  const handleSeek = useCallback((time: number) => {
     const target = Math.max(0, time + manualOffset)
     const storeState = usePlayerStore.getState() as any
     if (typeof storeState.seek === 'function') {
@@ -282,7 +309,7 @@ export function LyricsPane({
     } else {
       seekTo(target)
     }
-  }
+  }, [manualOffset])
 
   // Fallback progressive edge blur mask style
   const maskStyle: React.CSSProperties = {
@@ -336,37 +363,21 @@ export function LyricsPane({
       onScroll={handleScroll}
       style={maskStyle}
       className={cn(
-        'lyrics-mask nocturne-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto space-y-6 px-6 py-32 text-left select-none',
+        'lyrics-mask nocturne-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto space-y-3 px-6 py-32 text-left select-none',
         !isDocked && 'pointer-events-none',
         className
       )}
       role="region"
       aria-label="Synchronized lyrics"
     >
-      {parsedLines.map((line, idx) => {
-        const isActive = idx === activeIndex
-
-        return (
-          <button
-            key={`${line.time}-${line.id ?? idx}`}
-            ref={isActive ? activeLineRef : undefined}
-            type="button"
-            onClick={() => handleSeek(line.time)}
-            className={cn(
-              'group w-full py-2 px-3 rounded-xl text-left outline-none focus-visible:ring-1 focus-visible:ring-[#EAB308]',
-              'lyric-line-motion',
-              isActive
-                ? 'text-white font-black text-xl md:text-2xl tracking-tight scale-[1.02] origin-left opacity-100 blur-0 drop-shadow-[0_2px_14px_rgba(234,179,8,0.35)]'
-                : 'text-slate-400/40 font-bold text-base md:text-lg tracking-tight scale-100 origin-left blur-[0.5px] hover:text-slate-200 hover:blur-0 hover:opacity-80 cursor-pointer'
-            )}
-            aria-current={isActive ? 'true' : undefined}
-          >
-            <span dir="auto" className="inline-block max-w-full leading-relaxed">
-              {line.text || '•••'}
-            </span>
-          </button>
-        )
-      })}
+      {parsedLines.map((line, idx) => (
+        <LyricLineRow
+          key={`${line.time}-${line.id ?? idx}`}
+          line={line}
+          isActive={idx === activeIndex}
+          onSeek={handleSeek}
+        />
+      ))}
     </div>
   )
 }
