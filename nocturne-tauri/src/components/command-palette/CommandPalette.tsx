@@ -9,6 +9,7 @@ import React, {
 import { createPortal } from 'react-dom'
 import {
   AppWindow,
+  BarChart3,
   Command as CommandIcon,
   Disc3,
   Keyboard,
@@ -51,6 +52,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   Repeat,
   Disc3,
   Library,
+  BarChart3,
   Search,
   Mic2,
   Layers,

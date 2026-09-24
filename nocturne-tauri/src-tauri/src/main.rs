@@ -4,7 +4,10 @@ mod commands;
 mod db;
 mod scanner;
 
-use commands::{clear_library, delete_track, get_lyrics, get_tracks, open_music_folder, pick_folder, save_cached_lyrics, scan_folder};
+use commands::{
+    clear_library, delete_track, get_listening_stats, get_lyrics, get_tracks, open_music_folder,
+    pick_folder, record_play, save_cached_lyrics, scan_folder,
+};
 use db::{open_db, DbState};
 use std::sync::Mutex;
 use tauri::Manager;
@@ -29,7 +32,9 @@ fn main() {
             delete_track,
             clear_library,
             get_lyrics,
-            save_cached_lyrics
+            save_cached_lyrics,
+            record_play,
+            get_listening_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running nocturne");

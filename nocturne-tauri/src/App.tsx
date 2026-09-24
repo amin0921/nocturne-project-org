@@ -263,6 +263,9 @@ export default function App(): JSX.Element {
       } else if (e.ctrlKey && e.key === '2') {
         e.preventDefault()
         setView('library')
+      } else if (e.ctrlKey && e.key === '3') {
+        e.preventDefault()
+        setView('stats')
       }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -295,6 +298,9 @@ export default function App(): JSX.Element {
           break
         case 'go-library':
           setView('library')
+          break
+        case 'go-stats':
+          setView('stats')
           break
         case 'focus-search':
           setView('library')
@@ -713,7 +719,7 @@ export default function App(): JSX.Element {
           <ErrorBoundary fallbackTitle="Sidebar Error">
             <MicroDock
               items={DOCK_ITEMS}
-              activeId={view === 'stage' ? 'stage' : 'library'}
+              activeId={view === 'stage' ? 'stage' : view === 'library' ? 'library' : ''}
               onSelect={handleDockSelect}
               expanded={dockExpanded}
               onToggleExpand={() => setDockExpanded(!dockExpanded)}

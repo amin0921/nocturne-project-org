@@ -140,6 +140,16 @@ export const STUDIO_COMMANDS: CommandItem[] = [
     actionId: 'go-library'
   },
   {
+    id: 'cmd-stats',
+    title: 'آمار شنیداری / Listening Stats',
+    category: 'navigation',
+    categoryLabel: 'Navigation',
+    shortcut: ['Ctrl', '3'],
+    icon: 'BarChart3',
+    keywords: ['stats', 'listening', 'charts', 'analytics', 'آمار', 'wrapped', 'replay'],
+    actionId: 'go-stats'
+  },
+  {
     id: 'cmd-search',
     title: 'Search Library',
     category: 'navigation',
@@ -241,6 +251,11 @@ export const SHORTCUT_ATLAS_GROUPS: AtlasGroup[] = [
         title: 'Library View',
         shortcut: ['Ctrl', '2'],
         description: 'Browse all tracks and search the library'
+      },
+      {
+        title: 'Listening Stats',
+        shortcut: ['Ctrl', '3'],
+        description: 'View offline listening stats dashboard'
       },
       {
         title: 'Toggle Lyrics',

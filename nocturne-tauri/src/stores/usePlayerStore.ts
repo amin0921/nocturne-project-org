@@ -6,6 +6,7 @@ import { getPlayerChannel, type StateUpdateMessage } from '../services/player-br
 import { toAudioUrl } from '../utils/audio-url'
 import { parseLrc, type LyricLine } from '../utils/lrcParser'
 import { fetchLyricsOnline } from '../services/lyricsService'
+import { usePlaybackHistory } from '../components/queue/usePlaybackHistory'
 
 export interface PlayerTrack {
   id: number
@@ -236,9 +237,85 @@ export function setCurrentLyrics(lyrics: LyricLine[]): void {
   set({ currentLyrics: lyrics })
 }
 
+interface PlayTrackingSession {
+  track: PlayerTrack
+  accumulatedMs: number
+  lastTickTime: number | null
+  hasRecorded: boolean
+}
+
+let activeSession: PlayTrackingSession | null = null
+
+function updatePlayTrackingTime(isCurrentlyPlaying: boolean): void {
+  if (!activeSession) return
+  const now = performance.now()
+  if (isCurrentlyPlaying && activeSession.lastTickTime !== null) {
+    const delta = now - activeSession.lastTickTime
+    if (delta > 0 && delta < 5000) {
+      activeSession.accumulatedMs += delta
+    }
+  }
+  activeSession.lastTickTime = isCurrentlyPlaying ? now : null
+
+  if (!activeSession.hasRecorded && activeSession.accumulatedMs >= 15000) {
+    activeSession.hasRecorded = true
+    flushActiveSessionPlay()
+  }
+}
+
+function flushActiveSessionPlay(): void {
+  if (!activeSession) return
+  const s = activeSession
+  const durationMs = Math.round(
+    s.track.duration_secs && s.track.duration_secs > 0
+      ? s.track.duration_secs * 1000
+      : s.accumulatedMs
+  )
+  invoke('record_play', {
+    trackId: String(s.track.id),
+    title: s.track.title,
+    artist: s.track.artist,
+    album: s.track.album || null,
+    durationMs: Math.max(1000, durationMs)
+  }).catch((err) => {
+    console.debug('[usePlayerStore] record_play error:', err)
+  })
+}
+
+function finishActiveSession(reason: 'ended' | 'skip'): void {
+  if (!activeSession) return
+  updatePlayTrackingTime(false)
+  if (!activeSession.hasRecorded) {
+    if (reason === 'ended' || activeSession.accumulatedMs >= 15000) {
+      activeSession.hasRecorded = true
+      flushActiveSessionPlay()
+    }
+  }
+  activeSession = null
+}
+
+function startPlaySession(track: PlayerTrack): void {
+  if (activeSession && activeSession.track.id !== track.id) {
+    finishActiveSession('skip')
+  }
+  activeSession = {
+    track,
+    accumulatedMs: 0,
+    lastTickTime: performance.now(),
+    hasRecorded: false
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    finishActiveSession('skip')
+  })
+}
+
 async function startAt(index: number): Promise<void> {
   const track = snapshot.queue[index] ?? null
   if (!track) return
+  startPlaySession(track)
   set({ index, currentTrack: track, currentTime: 0, duration: track.duration_secs, currentLyrics: [] })
   void loadLyricsForTrack(track)
   audioController.load(toAudioUrl(track.path))
@@ -246,6 +323,9 @@ async function startAt(index: number): Promise<void> {
     await audioController.play()
     resetFailures()
     set({ isPlaying: true })
+    if (activeSession) activeSession.lastTickTime = performance.now()
+    // Record the play once the engine actually started it (dedupes repeats).
+    usePlaybackHistory.getState().push(String(track.id), track)
   } catch (err) {
     // AbortError on rapid track switches is normal; real failures skip forward.
     if (err instanceof DOMException && err.name === 'AbortError') return
@@ -264,13 +344,18 @@ function ensureWiring(): void {
   el.addEventListener('play', () => {
     resetFailures()
     set({ isPlaying: true })
+    if (activeSession) activeSession.lastTickTime = performance.now()
   })
-  el.addEventListener('pause', () => set({ isPlaying: false }))
+  el.addEventListener('pause', () => {
+    set({ isPlaying: false })
+    updatePlayTrackingTime(false)
+  })
   el.addEventListener('error', () => {
     if (registerFailure(snapshot.currentTrack, mediaErrorText(audioController.getError()))) return
     void next(true)
   })
   el.addEventListener('ended', () => {
+    finishActiveSession('ended')
     if (snapshot.mode === 'repeat-one') {
       audioController.seek(0)
       void audioController.play().catch(() => undefined)
@@ -292,6 +377,7 @@ function ensureWiring(): void {
   })
   audioController.onTime(() => {
     set({ currentTime: audioController.getTime() })
+    updatePlayTrackingTime(snapshot.isPlaying)
   })
 }
 
@@ -391,6 +477,42 @@ export function reorderQueue(newQueue: PlayerTrack[]): void {
   set({ queue: newQueue, index })
 }
 
+/**
+ * Commit a new queue ORDER (drag-and-drop / undo) given only track ids.
+ * Existing track objects are preserved byte-for-byte — nothing is cloned or
+ * re-fetched — ids missing from `order` are re-appended in place, and ids that
+ * do not belong to the queue are ignored. Index re-derivation (and therefore
+ * uninterrupted playback) is delegated to `reorderQueue`.
+ */
+export function setQueueOrder(order: string[]): void {
+  ensureWiring()
+  const current = snapshot.queue
+  if (current.length === 0) return
+
+  const indexById = new Map<string, number>()
+  current.forEach((track, i) => {
+    const key = String(track.id)
+    if (!indexById.has(key)) indexById.set(key, i)
+  })
+
+  const next: PlayerTrack[] = []
+  const placed = new Set<number>()
+  order.forEach((raw) => {
+    const at = indexById.get(raw)
+    if (at === undefined || placed.has(at)) return
+    next.push(current[at])
+    placed.add(at)
+  })
+  // Defensive tail: never drop a track the caller omitted.
+  current.forEach((track, i) => {
+    if (placed.has(i)) return
+    next.push(track)
+    placed.add(i)
+  })
+
+  reorderQueue(next)
+}
+
 export function setVolume(volume: number): void {
   ensureWiring()
   const v = Math.min(100, Math.max(0, Math.round(volume)))
@@ -441,6 +563,7 @@ export function isTrackFavorite(trackId?: number | null): boolean {
 
 /** Cleanly pauses playback, unloads active audio, and resets queue state */
 export function clearQueue(): void {
+  finishActiveSession('skip')
   lyricsAbortController?.abort()
   ensureWiring()
   try {
@@ -472,6 +595,7 @@ usePlayerStore.getState = () => ({
   clearQueue,
   setQueue,
   reorderQueue,
+  setQueueOrder,
   playTracks,
   playTrackAt,
   togglePlay,

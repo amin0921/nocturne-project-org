@@ -181,6 +181,289 @@ pub fn save_cached_lyrics(file_path: String, content: String) -> Result<(), Stri
     std::fs::write(&lrc_path, content.as_bytes()).map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RankedItemDto {
+    pub id: String,
+    pub title: String,
+    pub sub: String,
+    pub metric: String,
+    pub value: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsPayload {
+    pub hours: f64,
+    pub hours_delta: f64,
+    pub hours_trend: Vec<f64>,
+    pub plays: u64,
+    pub plays_delta: f64,
+    pub plays_trend: Vec<f64>,
+    pub artists: usize,
+    pub artists_delta: f64,
+    pub active_days: usize,
+    pub week_bars: Vec<f64>,
+    pub today_index: usize,
+    pub top_artists: Vec<RankedItemDto>,
+    pub top_tracks: Vec<RankedItemDto>,
+}
+
+pub fn record_play_impl(
+    conn: &rusqlite::Connection,
+    track_id: &str,
+    title: &str,
+    artist: &str,
+    album: Option<&str>,
+    duration_ms: u64,
+) -> Result<i64, String> {
+    let now = crate::db::now_ms();
+    conn.execute(
+        "INSERT INTO plays (track_id, title, artist, album, played_at, duration_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![track_id, title, artist, album, now, duration_ms as i64],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn get_listening_stats_impl(
+    conn: &rusqlite::Connection,
+    range: &str,
+) -> Result<StatsPayload, String> {
+    let now = crate::db::now_ms();
+    let timeframe_ms: i64 = match range {
+        "month" => 30 * 24 * 3600 * 1000,
+        "year" => 365 * 24 * 3600 * 1000,
+        _ => 7 * 24 * 3600 * 1000, // "week"
+    };
+
+    let cur_start = now - timeframe_ms;
+    let prev_start = cur_start - timeframe_ms;
+    let prev_end = cur_start;
+
+    // Current period metrics
+    let (cur_hours, cur_plays, cur_artists, active_days): (f64, i64, usize, usize) = conn
+        .query_row(
+            "SELECT
+               COALESCE(SUM(duration_ms)/3600000.0, 0.0),
+               COUNT(*),
+               COUNT(DISTINCT artist),
+               COUNT(DISTINCT strftime('%Y-%m-%d', played_at/1000, 'unixepoch', 'localtime'))
+             FROM plays
+             WHERE played_at >= ?1",
+            params![cur_start],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap_or((0.0, 0, 0, 0));
+
+    // Previous period metrics
+    let (prev_hours, prev_plays, prev_artists): (f64, i64, usize) = conn
+        .query_row(
+            "SELECT
+               COALESCE(SUM(duration_ms)/3600000.0, 0.0),
+               COUNT(*),
+               COUNT(DISTINCT artist)
+             FROM plays
+             WHERE played_at >= ?1 AND played_at < ?2",
+            params![prev_start, prev_end],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap_or((0.0, 0, 0));
+
+    let calc_delta = |cur: f64, prev: f64| -> f64 {
+        if prev > 0.0 {
+            ((cur - prev) / prev) * 100.0
+        } else if cur > 0.0 {
+            100.0
+        } else {
+            0.0
+        }
+    };
+
+    let hours_delta = calc_delta(cur_hours, prev_hours);
+    let plays_delta = calc_delta(cur_plays as f64, prev_plays as f64);
+    let artists_delta = calc_delta(cur_artists as f64, prev_artists as f64);
+
+    // 8 normalized trend values
+    let mut hours_trend = vec![0.0; 8];
+    let mut plays_trend = vec![0.0; 8];
+    let bucket_ms = timeframe_ms / 8;
+    for i in 0..8 {
+        let b_start = cur_start + (i as i64) * bucket_ms;
+        let b_end = if i == 7 { now } else { cur_start + ((i + 1) as i64) * bucket_ms };
+        let (h, p): (f64, i64) = conn
+            .query_row(
+                "SELECT COALESCE(SUM(duration_ms)/3600000.0, 0.0), COUNT(*)
+                 FROM plays WHERE played_at >= ?1 AND played_at < ?2",
+                params![b_start, b_end],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((0.0, 0));
+        hours_trend[i] = h;
+        plays_trend[i] = p as f64;
+    }
+    let max_h = hours_trend.iter().cloned().fold(0.0, f64::max);
+    if max_h > 0.0 {
+        for val in &mut hours_trend {
+            *val = *val / max_h;
+        }
+    }
+    let max_p = plays_trend.iter().cloned().fold(0.0, f64::max);
+    if max_p > 0.0 {
+        for val in &mut plays_trend {
+            *val = *val / max_p;
+        }
+    }
+
+    // Week bars (7 values, Saturday to Friday) and today_index
+    let today_index: usize = conn
+        .query_row(
+            "SELECT (cast(strftime('%w', 'now', 'localtime') as integer) + 1) % 7",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    let saturday_midnight_ms: i64 = conn
+        .query_row(
+            "SELECT (cast(strftime('%s', 'now', 'localtime', 'start of day') as integer) - (?1 * 86400)) * 1000",
+            params![today_index as i64],
+            |r| r.get(0),
+        )
+        .unwrap_or(cur_start);
+
+    let mut week_bars = vec![0.0; 7];
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT (cast(strftime('%w', played_at/1000, 'unixepoch', 'localtime') as integer) + 1) % 7 AS dow,
+                SUM(duration_ms)/3600000.0 AS hours
+         FROM plays
+         WHERE played_at >= ?1
+         GROUP BY dow",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![saturday_midnight_ms], |r| {
+            Ok((r.get::<_, usize>(0)?, r.get::<_, f64>(1)?))
+        }) {
+            for row in rows.flatten() {
+                if row.0 < 7 {
+                    week_bars[row.0] = row.1;
+                }
+            }
+        }
+    }
+
+    // Top 10 artists by duration
+    let mut top_artists = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT artist, SUM(duration_ms) AS ms, COUNT(*) AS plays
+         FROM plays
+         WHERE played_at >= ?1
+         GROUP BY artist
+         ORDER BY ms DESC, plays DESC
+         LIMIT 10",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![cur_start], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        }) {
+            for row in rows.flatten() {
+                let artist = row.0;
+                let ms = row.1;
+                let plays = row.2;
+                let hours = (ms as f64) / 3_600_000.0;
+                let metric = if hours >= 0.1 {
+                    format!("{:.1}h", hours)
+                } else {
+                    format!("{}m", ms / 60_000)
+                };
+                top_artists.push(RankedItemDto {
+                    id: artist.clone(),
+                    title: artist,
+                    sub: format!("{} plays", plays),
+                    metric,
+                    value: hours,
+                });
+            }
+        }
+    }
+
+    // Top 10 tracks by play count
+    let mut top_tracks = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT track_id, title, artist, COUNT(*) AS plays, SUM(duration_ms) AS ms
+         FROM plays
+         WHERE played_at >= ?1
+         GROUP BY track_id
+         ORDER BY plays DESC, ms DESC
+         LIMIT 10",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![cur_start], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        }) {
+            for row in rows.flatten() {
+                let track_id = row.0;
+                let title = row.1;
+                let artist = row.2;
+                let plays = row.3;
+                let _ms = row.4;
+                top_tracks.push(RankedItemDto {
+                    id: track_id,
+                    title,
+                    sub: artist,
+                    metric: format!("{} plays", plays),
+                    value: plays as f64,
+                });
+            }
+        }
+    }
+
+    Ok(StatsPayload {
+        hours: cur_hours,
+        hours_delta,
+        hours_trend,
+        plays: cur_plays as u64,
+        plays_delta,
+        plays_trend,
+        artists: cur_artists,
+        artists_delta,
+        active_days,
+        week_bars,
+        today_index,
+        top_artists,
+        top_tracks,
+    })
+}
+
+/// Inserts a play event into SQLite.
+#[tauri::command]
+pub fn record_play(
+    state: State<DbState>,
+    track_id: String,
+    title: String,
+    artist: String,
+    album: Option<String>,
+    duration_ms: u64,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    record_play_impl(&conn, &track_id, &title, &artist, album.as_deref(), duration_ms)?;
+    Ok(())
+}
+
+/// Retrieves aggregated listening stats for range "week", "month", or "year".
+#[tauri::command]
+pub fn get_listening_stats(
+    state: State<DbState>,
+    range: String,
+) -> Result<StatsPayload, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    get_listening_stats_impl(&conn, &range)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,5 +570,40 @@ mod tests {
         assert_eq!(read_back, "[00:02.50]Cached lyrics");
 
         let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn record_play_and_get_stats_empty() {
+        let conn = mem_db();
+        let stats = get_listening_stats_impl(&conn, "week").unwrap();
+        assert_eq!(stats.hours, 0.0);
+        assert_eq!(stats.plays, 0);
+        assert_eq!(stats.artists, 0);
+        assert_eq!(stats.active_days, 0);
+        assert_eq!(stats.hours_trend.len(), 8);
+        assert_eq!(stats.plays_trend.len(), 8);
+        assert_eq!(stats.week_bars.len(), 7);
+        assert!(stats.top_artists.is_empty());
+        assert!(stats.top_tracks.is_empty());
+    }
+
+    #[test]
+    fn record_play_and_get_stats_with_data() {
+        let conn = mem_db();
+        let row_id = record_play_impl(&conn, "t1", "Track 1", "Artist A", Some("Album A"), 180_000).unwrap();
+        assert!(row_id > 0);
+        record_play_impl(&conn, "t2", "Track 2", "Artist B", None, 120_000).unwrap();
+        record_play_impl(&conn, "t1", "Track 1", "Artist A", Some("Album A"), 180_000).unwrap();
+
+        let stats = get_listening_stats_impl(&conn, "week").unwrap();
+        assert_eq!(stats.plays, 3);
+        assert_eq!(stats.artists, 2);
+        assert_eq!(stats.active_days, 1);
+        assert!((stats.hours - 0.1333).abs() < 0.01);
+        assert_eq!(stats.top_artists.len(), 2);
+        assert_eq!(stats.top_artists[0].title, "Artist A");
+        assert_eq!(stats.top_tracks.len(), 2);
+        assert_eq!(stats.top_tracks[0].title, "Track 1");
+        assert_eq!(stats.top_tracks[0].value, 2.0);
     }
 }

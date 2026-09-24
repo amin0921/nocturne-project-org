@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 
-export type ViewMode = 'stage' | 'library'
-export type RightPanelTab = 'queue' | 'specs'
+export type ViewMode = 'stage' | 'library' | 'stats'
+export type RightPanelTab = 'queue' | 'history' | 'specs'
 
 export interface UIState {
   view: ViewMode
@@ -23,7 +23,7 @@ function getInitialView(): ViewMode {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw)
-      if (parsed.view === 'stage' || parsed.view === 'library') {
+      if (parsed.view === 'stage' || parsed.view === 'library' || parsed.view === 'stats') {
         return parsed.view
       }
     }

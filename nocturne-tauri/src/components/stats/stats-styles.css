@@ -1,0 +1,116 @@
+/* ===== Offline Listening Stats — Nocturne ===== */
+:root {
+  --ns-bg: #0D0F15;
+  --ns-amber: #f59e0b;
+  --ns-amber-soft: rgba(245, 158, 11, 0.14);
+  --ns-glass: rgba(18, 20, 25, 0.66);
+  --ns-border: rgba(255, 255, 255, 0.08);
+  --ns-text: #e8eaf0;
+  --ns-muted: #9aa0ae;
+  --ns-ease-out: cubic-bezier(.2, 0, 0, 1);
+  --ns-ease-grow: cubic-bezier(0.16, 1, 0.3, 1);
+  --ns-mono: ui-monospace, "JetBrains Mono", monospace;
+}
+
+/* ---------- کارت متریک شیشه‌ای ---------- */
+.ns-card {
+  background: var(--ns-glass);
+  -webkit-backdrop-filter: blur(16px) saturate(1.25);
+  backdrop-filter: blur(16px) saturate(1.25);
+  border: 1px solid var(--ns-border);
+  border-radius: 16px;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.35),
+              inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  padding: 18px;
+  animation: ns-card-in .25s var(--ns-ease-out) both;
+  animation-delay: var(--ns-delay, 0ms);
+}
+@keyframes ns-card-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.ns-card .label { font-size: 12px; color: var(--ns-muted); margin-bottom: 8px; }
+.ns-card .value-row { display: flex; align-items: baseline; gap: 8px; }
+.ns-card .value {
+  font-family: var(--ns-mono); font-size: 30px; font-weight: 700;
+  direction: ltr; color: var(--ns-text);
+  font-variant-numeric: tabular-nums;
+  position: relative;
+  display: inline-block;
+}
+.ns-card .unit { font-size: 12px; color: var(--ns-muted); }
+.ns-delta {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--ns-mono); font-size: 11px; direction: ltr;
+  padding: 3px 8px; border-radius: 999px;
+  background: rgba(52, 211, 153, 0.12); color: #34d399;
+}
+.ns-delta[data-neg="true"] { background: rgba(248, 113, 113, 0.12); color: #f87171; }
+
+/* ---------- Mini Trend Bars (8 Consistent Micro-Bars) ---------- */
+.ns-trend {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 24px;
+  margin-top: 14px;
+  direction: ltr !important;
+}
+.ns-trend i {
+  width: 3px;
+  min-height: 3px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.10);
+  transform: scaleY(0);
+  transform-origin: bottom;
+  animation: ns-grow .6s var(--ns-ease-grow) both;
+  animation-delay: calc(var(--ns-delay, 0ms) + var(--i) * 40ms);
+}
+.ns-trend i:last-child,
+.ns-trend i.active-amber {
+  background: var(--ns-amber);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+}
+@keyframes ns-grow { to { transform: scaleY(1); } }
+
+/* ---------- نمودار میله‌ای SVG ---------- */
+.ns-bars rect {
+  transform-box: fill-box; transform-origin: bottom;
+  transform: scaleY(0);
+  animation: ns-grow .6s var(--ns-ease-grow) both;
+  animation-delay: calc(var(--i) * 60ms);
+  transition: opacity .18s var(--ns-ease-out);
+}
+.ns-bars rect:hover { opacity: 0.85; }
+.ns-bars .bar-label {
+  font-family: var(--ns-mono); font-size: 11px; direction: ltr; fill: var(--ns-muted);
+}
+.ns-bars .bar-grid-label {
+  font-family: var(--ns-mono); font-size: 10px; direction: ltr; fill: rgba(255, 255, 255, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+.ns-bars .day-label { font-size: 11px; fill: var(--ns-muted); }
+.ns-bars .today { fill: var(--ns-amber); font-weight: 700; }
+
+/* ---------- سوییچر بازه ---------- */
+.ns-range { display: inline-flex; position: relative; gap: 2px; padding: 4px;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--ns-border); border-radius: 12px; }
+.ns-range button {
+  position: relative; z-index: 1; padding: 7px 16px; border: 0; border-radius: 9px;
+  background: transparent; color: var(--ns-muted); font-size: 13px; cursor: pointer;
+  transition: color .18s var(--ns-ease-out);
+}
+.ns-range button[data-active="true"] { color: var(--ns-text); font-weight: 600; }
+.ns-range .pill {
+  position: absolute; top: 4px; bottom: 4px; left: 0; z-index: 0;
+  background: rgba(255,255,255,0.07); border: 1px solid var(--ns-border); border-radius: 9px;
+  transition: transform .25s cubic-bezier(0.4,0,0.2,1), width .25s cubic-bezier(0.4,0,0.2,1);
+  will-change: transform, width;
+}
+
+/* ---------- reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .ns-card, .ns-trend i, .ns-bars rect { animation: none !important; }
+  .ns-card { opacity: 1 !important; transform: none !important; }
+  .ns-trend i, .ns-bars rect { transform: scaleY(1) !important; }
+}

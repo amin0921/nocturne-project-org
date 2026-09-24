@@ -8,6 +8,7 @@ import { TiltCard } from './TiltCard'
 import { Marquee } from './Marquee'
 import { WindowGripPill } from './WindowGripPill'
 import { DynamicIslandLyrics } from './DynamicIslandLyrics'
+import { StatsDashboard } from './stats/StatsDashboard'
 import { useAmbientPalette } from '../stores/useAmbientPalette'
 import { resolveCoverUrl } from '../utils/cover-url'
 import { cn } from '../lib/utils'
@@ -51,7 +52,7 @@ export function CenterIsland({
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 px-5 relative z-20">
         <div className="flex items-center gap-2 min-w-0">
           <h2 className="text-[11px] font-medium tracking-[0.2em] text-slate-400/70 uppercase select-none shrink-0">
-            {view === 'stage' ? 'Now Playing' : 'Library'}
+            {view === 'stage' ? 'Now Playing' : view === 'stats' ? 'Listening Stats' : 'Library'}
           </h2>
           {view === 'stage' && currentTrack?.album && currentTrack.album !== 'Unknown Album' && (
             <span className="hidden sm:inline-block text-[11px] text-slate-500/80 font-mono tracking-tight truncate max-w-xs">
@@ -218,6 +219,10 @@ export function CenterIsland({
             )}
           </div>
         )
+      ) : view === 'stats' ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <StatsDashboard />
+        </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {libraryContent}

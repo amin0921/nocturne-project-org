@@ -33,6 +33,17 @@ CREATE TABLE IF NOT EXISTS tracks (
 CREATE INDEX IF NOT EXISTS idx_tracks_folder ON tracks(folder_id, missing);
 CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);
 CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
+CREATE TABLE IF NOT EXISTS plays (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  track_id    TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  artist      TEXT NOT NULL,
+  album       TEXT,
+  played_at   INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plays_time ON plays(played_at);
+CREATE INDEX IF NOT EXISTS idx_plays_track ON plays(track_id);
 ";
 
 pub fn now_ms() -> i64 {
