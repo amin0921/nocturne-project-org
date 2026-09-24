@@ -2,13 +2,12 @@ import React, { useState, useEffect } from 'react'
 import { Disc3, MicVocal, Music } from 'lucide-react'
 import { useUIStore } from '../stores/useUIStore'
 import { usePlayerStore } from '../stores/usePlayerStore'
-import { AmbientGlow } from './AmbientGlow'
+import { AmberBreath } from './ambient/AmberBreath'
 import { ViewToggle } from './ViewToggle'
 import { TiltCard } from './TiltCard'
 import { Marquee } from './Marquee'
 import { WindowGripPill } from './WindowGripPill'
 import { DynamicIslandLyrics } from './DynamicIslandLyrics'
-import { useAmbientPalette } from '../stores/useAmbientPalette'
 import { resolveCoverUrl } from '../utils/cover-url'
 import { cn } from '../lib/utils'
 
@@ -36,7 +35,6 @@ export function CenterIsland({
   const [imgError, setImgError] = useState(false)
   const isLyricsExpanded = useUIStore((s) => s.lyricsOpen)
   const setLyricsOpen = useUIStore((s) => s.setLyricsOpen)
-  const ambientPalette = useAmbientPalette()
 
   useEffect(() => {
     setImgError(false)
@@ -108,19 +106,16 @@ export function CenterIsland({
                 backfaceVisibility: 'hidden'
               }}
             >
-              {/* Artwork block: Ambient Glow + TiltCard + floor reflection.
+              {/* Artwork block: Amber Breath aura + TiltCard + floor reflection.
                   min-h-0 releases the flex min-height:auto floor so the block
                   can genuinely shrink in short windows; shrink-0 on TiltCard
                   keeps the album cover a perfect square (overflow is absorbed
                   by the stage's permanent overflow-hidden, never a scrollbar). */}
               <div className="relative my-auto flex min-h-0 flex-col items-center">
-                <AmbientGlow
-                  primary={ambientPalette.primary}
-                  secondary={ambientPalette.secondary}
-                  pulsing={isPlaying}
-                  intensity={0.5}
-                  className="inset-[-36px]"
-                />
+                {/* Amber Breath sits absolutely behind the artwork (left 50% /
+                    top 45% of this relative block) — pointer-events-none, zero
+                    layout geometry, dispersion baked into the gradient stops. */}
+                <AmberBreath playing={isPlaying} />
 
                 <TiltCard className="relative aspect-square shrink-0 w-56 sm:w-64 md:w-72 max-w-[320px] rounded-2xl cursor-pointer">
                   <div className="relative h-full w-full overflow-hidden rounded-2xl border border-white/10 shadow-[0_24px_50px_-12px_rgba(0,0,0,0.8)] bg-[#121419]">

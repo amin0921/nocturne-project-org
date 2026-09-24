@@ -817,6 +817,61 @@ body::-webkit-scrollbar,
 }
 
 /* ====================================================================
+ * Amber Breath — Audio-Reactive Organic Stage Aura (Step 93)
+ * Soft dispersion is baked directly into the radial-gradient stops —
+ * ZERO box-shadow / CSS blur filters (transparent-window halo trap).
+ * JS mutates --glow-r / --glow-o / --glow-h; .idle hands the element
+ * to a pure-GPU 6s sine breathing rhythm at 0% JS CPU cost.
+ * ==================================================================== */
+
+.amber-breath {
+  position: absolute;
+  width: var(--glow-r, 340px);
+  height: var(--glow-r, 340px);
+  border-radius: 9999px;
+  background: radial-gradient(
+    circle,
+    hsla(var(--glow-h, 42deg), 95%, 55%, var(--glow-o, 0.3)) 0%,
+    hsla(var(--glow-h, 42deg), 90%, 45%, calc(var(--glow-o, 0.3) * 0.4)) 40%,
+    transparent 70%
+  );
+  will-change: transform, opacity;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  left: 50%;
+  top: 45%;
+}
+
+.amber-breath.idle {
+  animation: breathe 6s ease-in-out infinite;
+  /* One-shot glide of the frozen radius back to resting on idle entry
+     (the rAF loop sleeps, so these vars never retarget mid-animation). */
+  transition: width 800ms ease, height 800ms ease;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(0.96);
+    opacity: 0.22;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.04);
+    opacity: 0.38;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .amber-breath,
+  .amber-breath.idle {
+    animation: none !important;
+    transition: none !important;
+    opacity: 0.3 !important;
+    transform: translate(-50%, -50%) !important;
+  }
+}
+
+/* ====================================================================
  * Mini Island — G2 Squircle Curvature (progressive enhancement)
  * Native corner-shape: squircle (Chromium/WebView2 139+) paired with
  * border-radius; unsupported engines keep the rounded fallback.

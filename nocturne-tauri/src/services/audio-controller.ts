@@ -1,5 +1,9 @@
 // Single native HTMLAudioElement for the whole app. Created once, never destroyed.
-// No decode libraries, no Web Audio graphs (AGENTS.md). timeupdate fires ~4Hz natively.
+// No decode libraries, no Web Audio graphs — the element outputs directly to the
+// OS audio device with zero interception (AGENTS.md single-audio-authority rule).
+// Step 94: createMediaElementSource was removed — asset-protocol (asset://) media
+// is cross-origin/tainted under WebView2, so a MediaElementAudioSourceNode would
+// emit permanent silence. timeupdate fires ~4Hz natively.
 
 type Handler = () => void
 
