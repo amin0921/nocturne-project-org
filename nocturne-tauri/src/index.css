@@ -316,6 +316,9 @@ body::-webkit-scrollbar,
 .nocturne-scroll {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+  /* Reserve the gutter even when the scrollbar is absent/overlaid — kills the
+     sub-pixel horizontal twitch when rows shift during queue reorder. */
+  scrollbar-gutter: stable;
 }
 
 .nocturne-scroll::-webkit-scrollbar {
@@ -604,7 +607,69 @@ body::-webkit-scrollbar,
 }
 
 .queue-item-enter {
-  animation: queue-item-enter 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* `backwards` (not `both`): after the entrance ends, the keyframe transform
+     releases so Magnetic Queue's inline FLIP translateY is never overridden
+     by a finished animation's fill. */
+  animation: queue-item-enter 220ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+/* ====================================================================
+ * Magnetic Queue — hand-rolled FLIP drag-reorder rows (§5)
+ * ==================================================================== */
+
+.mq-row {
+  /* Strict horizontal stability: rows never change width before/during/after drag. */
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  touch-action: none;
+  cursor: grab;
+  /* Reorder lock: no entrance keyframes (queue-item-enter's translateX was the
+     horizontal drawer) and no CSS transform/width/margin transitions — FLIP and
+     the spring own transform; only paint properties may ease. */
+  animation: none !important;
+  transform-origin: center center;
+  transition: filter 150ms, box-shadow 150ms;
+}
+
+.mq-list[data-dragging='true'] {
+  cursor: grabbing;
+}
+
+.mq-list[data-dragging='true'] .mq-row {
+  will-change: transform;
+  cursor: grabbing;
+}
+
+/* Inactive sibling rows dim to 85% while one row is lifted. */
+.mq-list[data-dragging='true'] .mq-row:not(.mq-lifted) {
+  opacity: 0.85;
+}
+
+/* Lift phase: pure vertical translation + elevated dark-glass shadow, high
+   stacking context, subtle brightness boost. No scale — width is frozen. */
+.mq-row.mq-lifted {
+  position: relative;
+  z-index: 30;
+  box-shadow:
+    0 16px 36px -4px rgba(0, 0, 0, 0.65),
+    0 0 0 1px rgba(255, 255, 255, 0.12);
+  filter: brightness(1.05);
+}
+
+/* Studio Amber index flash: snaps bright on landing (inline transition:none),
+   holds FLASH_HOLD_MS (400ms), then relaxes back to silver over 300ms. */
+.mq-chip {
+  transition: color 300ms ease-out, filter 300ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mq-chip {
+    transition: none;
+  }
+  .mq-row {
+    transition: none;
+  }
 }
 
 /* ====================================================================
@@ -651,22 +716,53 @@ body::-webkit-scrollbar,
 
 @media (prefers-reduced-motion: reduce) {
   .animate-marquee,
-  .queue-item-enter,
   .animate-heart-pop,
   .animate-spark {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;
   }
+  /* Only kill the animation — never `transform: none !important`, which would
+     veto Magnetic Queue's inline FLIP transforms under reduced motion. */
+  .queue-item-enter {
+    animation: none !important;
+  }
   .play-pause-path {
     transition: none !important;
   }
 }
 
-/* Category 3: Lyrics Progressive Top & Bottom Gradient Edge Mask */
+/* Category 3: Lyrics Progressive Top & Bottom Vignette Mask */
+.lyrics-vignette-mask,
 .lyrics-mask {
-  -webkit-mask-image: linear-gradient(to bottom, transparent, black 15%, black 85%, transparent);
-  mask-image: linear-gradient(to bottom, transparent, black 15%, black 85%, transparent);
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(0, 0, 0, 0.35) 8%,
+    black 24%,
+    black 76%,
+    rgba(0, 0, 0, 0.35) 92%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(0, 0, 0, 0.35) 8%,
+    black 24%,
+    black 76%,
+    rgba(0, 0, 0, 0.35) 92%,
+    transparent 100%
+  );
+  /* Hide native scrollbars so the scroll thumb isn't awkwardly clipped by the vignette mask */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.lyrics-vignette-mask::-webkit-scrollbar,
+.lyrics-mask::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 /* Spotify-style kinetic lyric line transitions */
@@ -679,16 +775,28 @@ body::-webkit-scrollbar,
   will-change: transform, opacity, filter;
 }
 
-/* Studio Amber Glow — solid line-level activation (replaces gradient wipe) */
+/* Studio Amber Glow — solid line-level activation */
 .lyric-line-active-solid {
   color: #f59e0b !important;
   font-weight: 900 !important;
   filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.45));
 }
 
-.lyric-line-inactive {
-  color: rgba(255, 255, 255, 0.35) !important;
+.lyric-line-neighbor {
+  color: rgba(255, 255, 255, 0.5) !important;
   font-weight: 700;
+  filter: none;
+}
+
+.lyric-line-distant {
+  color: rgba(255, 255, 255, 0.28) !important;
+  font-weight: 500;
+  filter: none;
+}
+
+.lyric-line-inactive {
+  color: rgba(255, 255, 255, 0.28) !important;
+  font-weight: 500;
   filter: none;
 }
 
@@ -885,5 +993,45 @@ body::-webkit-scrollbar,
     corner-shape: squircle;
   }
 }
+
+/* ====================================================================
+ * Play/Pause Seamless Vector Morph & Amber Aura Pulse (Category 1)
+ * ==================================================================== */
+
+@keyframes play-aura-pulse {
+  0%, 100% {
+    box-shadow: 0 0 20px 2px rgba(245, 158, 11, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 32px 5px rgba(245, 158, 11, 0.68);
+  }
+}
+
+.animate-play-pulse {
+  animation: play-aura-pulse 2.4s ease-in-out infinite;
+  will-change: box-shadow;
+}
+
+.play-pause-icon {
+  transition: transform 260ms ease, opacity 200ms ease;
+  will-change: transform;
+}
+
+.play-pause-path {
+  transition: d 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: d;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-play-pulse {
+    animation: none !important;
+  }
+  .play-pause-icon,
+  .play-pause-path,
+  .play-pause-btn {
+    transition: none !important;
+  }
+}
+
 
 

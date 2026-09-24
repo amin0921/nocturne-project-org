@@ -22,7 +22,7 @@ import { Button } from './ui/button'
 import { WaveformSeeker } from './WaveformSeeker'
 import { VinylOrbit } from './VinylOrbit'
 import { Marquee } from './Marquee'
-import { PlayPauseButton } from './PlayPauseButton'
+import { PlayPauseButton } from './controls/PlayPauseButton'
 import { FavoriteButton } from './FavoriteButton'
 import { DetentKnob } from './controls/DetentKnob'
 
@@ -88,11 +88,12 @@ export default function PlayerBar({ onOpenCoverView }: PlayerBarProps = {}): JSX
           <SkipBack size={17} aria-hidden />
         </Button>
 
-        {/* Category 1 Micro-Interaction: solid single-path play / twin-bar pause glyph */}
+        {/* Category 1 Micro-Interaction: seamless zero-seam SVG play/pause vector morph */}
         <PlayPauseButton
           isPlaying={isPlaying}
           onClick={() => void togglePlay()}
           disabled={!hasTrack}
+          className={cn(isPlaying && 'animate-play-pulse')}
         />
 
         <Button

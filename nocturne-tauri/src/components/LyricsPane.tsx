@@ -21,12 +21,14 @@ export interface LyricsPaneProps {
 interface LyricLineRowProps {
   line: LyricLine
   isActive: boolean
+  distance: number
   onSeek: (time: number) => void
 }
 
 const LyricLineRow = React.memo(function LyricLineRow({
   line,
   isActive,
+  distance,
   onSeek
 }: LyricLineRowProps): JSX.Element {
   return (
@@ -37,8 +39,10 @@ const LyricLineRow = React.memo(function LyricLineRow({
         'group w-full cursor-pointer py-1.5 px-3 rounded-xl text-left outline-none focus-visible:ring-1 focus-visible:ring-[#EAB308]',
         'lyric-line-motion space-y-3 py-1.5 leading-snug origin-left',
         isActive
-          ? 'lyric-line-active-solid text-xl md:text-2xl font-black scale-[1.06]'
-          : 'lyric-line-inactive text-base md:text-lg font-bold scale-100'
+          ? 'lyric-line-active-solid text-[#f59e0b] text-xl md:text-2xl font-black scale-[1.02]'
+          : distance === 1
+          ? 'lyric-line-neighbor text-white/50 text-base md:text-lg font-bold scale-100 hover:text-white/80'
+          : 'lyric-line-distant text-white/28 text-base md:text-lg font-medium scale-100 hover:text-white/60'
       )}
       aria-current={isActive ? 'true' : undefined}
     >
@@ -49,6 +53,11 @@ const LyricLineRow = React.memo(function LyricLineRow({
   )
 }, (previous, next) => {
   if (previous.isActive !== next.isActive) return false
+  if (previous.distance !== next.distance) {
+    if (!(previous.distance >= 2 && next.distance >= 2)) {
+      return false
+    }
+  }
   if (previous.line.text !== next.line.text) return false
   if (previous.line.time !== next.line.time) return false
   return previous.onSeek === next.onSeek
@@ -56,23 +65,24 @@ const LyricLineRow = React.memo(function LyricLineRow({
 
 /**
  * LyricsPane Component
- * Dedicated studio lyrics view for the right island (320px column).
+ * Dedicated studio lyrics view for the right island (320px column) & stage canvas.
  * Features:
  * - 1st: Local .lrc lookup beside audio file via Tauri IPC 'get_lyrics'
  * - 2nd: Automatic fallback fetch from LRCLIB API with query sanitizer
  * - 3rd: Background caching of fetched lyrics to sibling .lrc via 'save_cached_lyrics'
  * - Real-time synchronization to usePlayerStore.currentTime
- * - Smooth auto-scrolling with active row amber glow highlighting
+ * - Optical Center Lock: Active lyric line is continuously centered vertically (scrollIntoView block: "center")
+ * - Floating Viewport Spacer Padding: 36vh top/bottom padding gives lines 0 to end full centering travel
+ * - Cinematic Vignette Fade Mask (.lyrics-vignette-mask): GPU mask fades top/bottom into obsidian void
+ * - Visual Depth Hierarchy:
+ *     * Active: Studio Amber (#f59e0b), font-black (900), scale-[1.02], amber drop shadow
+ *     * Immediate neighbors (distance 1): text-white/50, font-bold
+ *     * Distant (distance >= 2): text-white/28, font-medium
+ * - Manual scroll throttle: 2.5s pause on wheel/touch/scroll so user interaction isn't fought
  * - Click-to-seek playback navigation
  * - Track change: instant scroll reset to top, then center the new opening line
- * - Expand (active prop): scroll container is pointer-events-none while the
- *   380ms island morph runs (no hover/hit-test mid-morph); re-centers the
- *   active line at 420ms — strictly after transition end — so scroll/layout
- *   recalculation never forces a synchronous reflow mid-interpolation
- * - External seek: immediate lock-free re-center (bottom bar / keyboard)
- * - Programmatic scroll awareness: auto-center never re-locks the user-scroll guard
- * - Progressive edge mask (.lyrics-mask)
- * - Strict anti-jitter geometry (min-h-0 min-w-0 flex flex-col overflow-hidden)
+ * - Expand (active prop): 420ms settle delay avoids layout thrashing mid-island morph
+ * - Preserves Vazirmatn variable font for Persian lyrics and Inter for Latin lyrics with dir="auto"
  */
 export function LyricsPane({
   lyrics: propsLyrics,
@@ -201,15 +211,15 @@ export function LyricsPane({
   const programmaticTimerRef = useRef<number | null>(null)
   const dockedRef = useRef(true)
 
-  const unlockAutoScroll = () => {
+  const unlockAutoScroll = useCallback(() => {
     userScrollingRef.current = false
     if (scrollTimeoutRef.current !== null) {
       window.clearTimeout(scrollTimeoutRef.current)
       scrollTimeoutRef.current = null
     }
-  }
+  }, [])
 
-  const beginProgrammaticScroll = () => {
+  const beginProgrammaticScroll = useCallback(() => {
     programmaticRef.current = true
     if (programmaticTimerRef.current !== null) {
       window.clearTimeout(programmaticTimerRef.current)
@@ -217,15 +227,20 @@ export function LyricsPane({
     programmaticTimerRef.current = window.setTimeout(() => {
       programmaticRef.current = false
     }, 900)
-  }
+  }, [])
 
-  const centerActiveLine = (behavior: ScrollBehavior = 'smooth') => {
+  const centerActiveLine = useCallback((behavior?: ScrollBehavior) => {
     if (!dockedRef.current) return
     const el = scrollContainerRef.current?.querySelector('button[aria-current="true"]') as HTMLButtonElement | null
     if (!el) return
     beginProgrammaticScroll()
-    el.scrollIntoView({ behavior, block: 'center' })
-  }
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const resolvedBehavior: ScrollBehavior =
+      behavior ?? (prefersReduced ? 'auto' : 'smooth')
+    el.scrollIntoView({ behavior: resolvedBehavior, block: 'center' })
+  }, [beginProgrammaticScroll])
 
   // Track change: instantly reset container scroll to the top of the new track
   // and release any stale manual-scroll lock.
@@ -235,7 +250,7 @@ export function LyricsPane({
       beginProgrammaticScroll()
       scrollContainerRef.current.scrollTop = 0
     }
-  }, [currentTrack?.id])
+  }, [currentTrack?.id, unlockAutoScroll, beginProgrammaticScroll])
 
   // New lyrics payload arrived (track change or late LRCLIB/local fetch):
   // reset to top and center the opening/active line — covers the case where
@@ -246,8 +261,11 @@ export function LyricsPane({
       beginProgrammaticScroll()
       scrollContainerRef.current.scrollTop = 0
     }
-    centerActiveLine()
-  }, [parsedLines])
+    const frame = requestAnimationFrame(() => {
+      centerActiveLine('auto')
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [parsedLines, unlockAutoScroll, beginProgrammaticScroll, centerActiveLine])
 
   // Transition-end scroll gating: while the island morphs (380ms), any
   // scrollIntoView forces a synchronous DOM layout on wrapped lyric lines and
@@ -267,10 +285,10 @@ export function LyricsPane({
       unlockAutoScroll()
       dockedRef.current = true
       setIsDocked(true)
-      centerActiveLine()
+      centerActiveLine('smooth')
     }, 420)
     return () => window.clearTimeout(timer)
-  }, [active])
+  }, [active, unlockAutoScroll, centerActiveLine])
 
   // Post-seek sync: a playback-time discontinuity means an external seek
   // (bottom bar, keyboard). Re-center immediately, bypassing the manual lock.
@@ -281,27 +299,46 @@ export function LyricsPane({
     const threshold = isPlaying ? 0.6 : 0.01
     if (jump < threshold) return
     unlockAutoScroll()
-    centerActiveLine()
-  }, [currentTime, isPlaying])
+    centerActiveLine('smooth')
+  }, [currentTime, isPlaying, unlockAutoScroll, centerActiveLine])
 
   // Smoothly center the active lyric line when activeIndex changes (playback tick)
   useEffect(() => {
     if (userScrollingRef.current) return
     centerActiveLine()
-  }, [activeIndex])
+  }, [activeIndex, centerActiveLine])
 
-  const handleScroll = () => {
-    // Ignore scroll events caused by our own scrollIntoView / scrollTop resets.
-    if (programmaticRef.current) return
+  const handleManualScrollActivity = useCallback(() => {
+    programmaticRef.current = false
     userScrollingRef.current = true
-    if (scrollTimeoutRef.current) window.clearTimeout(scrollTimeoutRef.current)
+    if (scrollTimeoutRef.current !== null) {
+      window.clearTimeout(scrollTimeoutRef.current)
+    }
     scrollTimeoutRef.current = window.setTimeout(() => {
       userScrollingRef.current = false
+      if (usePlayerStore.getState().isPlaying) {
+        centerActiveLine()
+      }
     }, 2500)
-  }
+  }, [centerActiveLine])
+
+  const handleScroll = useCallback(() => {
+    // Ignore scroll events caused by our own scrollIntoView / scrollTop resets.
+    if (programmaticRef.current) return
+    handleManualScrollActivity()
+  }, [handleManualScrollActivity])
+
+  const handleWheel = useCallback(() => {
+    handleManualScrollActivity()
+  }, [handleManualScrollActivity])
+
+  const handleTouchMove = useCallback(() => {
+    handleManualScrollActivity()
+  }, [handleManualScrollActivity])
 
   // Handle click-to-seek navigation (seek to the calibrated line time)
   const handleSeek = useCallback((time: number) => {
+    unlockAutoScroll()
     const target = Math.max(0, time + manualOffset)
     const storeState = usePlayerStore.getState() as any
     if (typeof storeState.seek === 'function') {
@@ -309,13 +346,19 @@ export function LyricsPane({
     } else {
       seekTo(target)
     }
-  }, [manualOffset])
+  }, [manualOffset, unlockAutoScroll])
 
-  // Fallback progressive edge blur mask style
-  const maskStyle: React.CSSProperties = {
-    WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)',
-    maskImage: 'linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)'
-  }
+  // Clear timers on unmount
+  useEffect(() => {
+    return () => {
+      if (scrollTimeoutRef.current !== null) {
+        window.clearTimeout(scrollTimeoutRef.current)
+      }
+      if (programmaticTimerRef.current !== null) {
+        window.clearTimeout(programmaticTimerRef.current)
+      }
+    }
+  }, [])
 
   if (!currentTrack) {
     return (
@@ -361,23 +404,32 @@ export function LyricsPane({
     <div
       ref={scrollContainerRef}
       onScroll={handleScroll}
-      style={maskStyle}
+      onWheel={handleWheel}
+      onTouchMove={handleTouchMove}
+      style={{
+        paddingTop: '36vh',
+        paddingBottom: '36vh'
+      }}
       className={cn(
-        'lyrics-mask nocturne-scroll flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto space-y-3 px-6 py-32 text-left select-none',
+        'lyrics-vignette-mask flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto space-y-3 px-6 text-left select-none',
         !isDocked && 'pointer-events-none',
         className
       )}
       role="region"
       aria-label="Synchronized lyrics"
     >
-      {parsedLines.map((line, idx) => (
-        <LyricLineRow
-          key={`${line.time}-${line.id ?? idx}`}
-          line={line}
-          isActive={idx === activeIndex}
-          onSeek={handleSeek}
-        />
-      ))}
+      {parsedLines.map((line, idx) => {
+        const distance = activeIndex >= 0 ? Math.abs(idx - activeIndex) : 999
+        return (
+          <LyricLineRow
+            key={`${line.time}-${line.id ?? idx}`}
+            line={line}
+            isActive={idx === activeIndex}
+            distance={distance}
+            onSeek={handleSeek}
+          />
+        )
+      })}
     </div>
   )
 }

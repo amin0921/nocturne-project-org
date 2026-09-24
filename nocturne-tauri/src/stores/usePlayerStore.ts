@@ -308,6 +308,26 @@ export function setQueue(tracks: PlayerTrack[], targetIndex?: number): void {
   set({ queue: tracks, index })
 }
 
+/**
+ * Atomically commit a reordered queue. `index` is re-derived from the
+ * currently playing track's id so playback is never interrupted or jumped —
+ * the audio element and its position are untouched.
+ */
+export function reorderQueue(newQueue: PlayerTrack[]): void {
+  ensureWiring()
+  const currentId = snapshot.currentTrack?.id
+  let index: number
+  if (newQueue.length === 0) {
+    index = -1
+  } else if (currentId !== undefined) {
+    const found = newQueue.findIndex((t) => t.id === currentId)
+    index = found >= 0 ? found : Math.min(Math.max(0, snapshot.index), newQueue.length - 1)
+  } else {
+    index = snapshot.index >= 0 ? Math.min(snapshot.index, newQueue.length - 1) : -1
+  }
+  set({ queue: newQueue, index })
+}
+
 export function setVolume(volume: number): void {
   ensureWiring()
   const v = Math.min(100, Math.max(0, Math.round(volume)))
@@ -386,6 +406,7 @@ usePlayerStore.getState = () => ({
   ...snapshot,
   clearQueue,
   setQueue,
+  reorderQueue,
   playTracks,
   playTrackAt,
   togglePlay,
