@@ -32,7 +32,9 @@ function emitterGradient(hex: string, centerAlpha: number, radiusPx: number, at:
   )} 55%, transparent 78%)`
 }
 
-const CROSS_FADE = 'opacity 600ms cubic-bezier(0.16, 1, 0.3, 1)'
+/* Hardware-accelerated cross-fade: palette swaps ride opacity (compositor
+   only), transform stays available for GPU-safe repositioning. */
+const CROSS_FADE = 'opacity 600ms cubic-bezier(0.16, 1, 0.3, 1), transform 600ms ease'
 const LAYER_BASE = 'pointer-events-none absolute'
 /** Glow 1 — top-center, reaching up under the Dynamic Island. */
 const TOP_EMITTER_POS = 'left-1/2 -top-[28%] h-[85%] w-[125%] -translate-x-1/2'
@@ -57,16 +59,19 @@ interface GlowBuffers {
 
 /**
  * AmbientGlow Component
- * Adaptive dual-emitter cinematic aura behind the stage artwork.
+ * Adaptive dual-emitter cinematic aura behind the stage artwork (restored Step 95).
  * - Emitter 1 (top-center): primary artwork tone at 40% center opacity.
  * - Emitter 2 (center-bottom): secondary artwork tone at 30% center opacity.
- * - Wide 380px/440px radial circles + 80px optical blur for a lush,
- *   studio-grade bloom across the stage without hard edges.
+ * - Wide 380px/440px radial circles + optical blur for a lush, studio-grade
+ *   bloom with natural falloff (transparent by 78%) — no hard circular edges.
  * - Palette changes cross-fade over 600ms via double-buffered opacity layers
  *   (background gradients are swapped only on the invisible layer, so there is
  *   never a hard cut — opacity-only transitions stay on the GPU compositor).
+ * - Windows transparency invariant: NO box-shadow anywhere; every layer is
+ *   pointer-events-none and fully clipped inside the opaque island stage, so
+ *   the blur can never bleed onto transparent window margins (grey-halo trap).
  * - Strictly additive over the solid #0D0F15 obsidian stage base; zero layout
- *   work, zero canvas repaints per frame, pointer-events-none throughout.
+ *   work, zero canvas repaints per frame.
  */
 export function AmbientGlow({
   primary = DEFAULT_PALETTE.primary,
