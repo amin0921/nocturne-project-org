@@ -1,0 +1,204 @@
+/* ====================================================================
+ * Nocturne Studio Command Palette & Shortcut Atlas — Stylesheet
+ * Floating Obsidian Glass, GPU Gliding Pill & Studio Keycaps
+ * ==================================================================== */
+
+/* Solid darkened backdrop — no backdrop-filter: WebView2 renders
+ * broken square blur artifacts around window edges otherwise.
+ * Constrained to the app shell (inset 1rem / radius 1.5rem) so the
+ * 16px frameless desktop passthrough gutter stays untouched. */
+.nc-palette-backdrop {
+  position: fixed;
+  inset: 1rem;
+  border-radius: 1.5rem;
+  overflow: hidden;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 14vh;
+  background: rgba(0, 0, 0, 0.85);
+  animation: nc-backdrop-in 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes nc-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Ambient Studio Amber Spotlight aura */
+.nc-palette-spotlight {
+  position: absolute;
+  top: -120px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 640px;
+  height: 320px;
+  background: radial-gradient(ellipse 600px 300px at 50% 20%, rgba(245, 158, 11, 0.16), transparent 70%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Obsidian Glass dialog panel */
+.nc-palette-panel {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  background: #0d0f15;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1rem;
+  box-shadow: 
+    0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 24px 60px -12px rgba(0, 0, 0, 0.85),
+    0 12px 28px -6px rgba(0, 0, 0, 0.6),
+    0 0 40px -10px rgba(245, 158, 11, 0.1);
+  overflow: hidden;
+  animation: nc-panel-in 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity;
+}
+
+@keyframes nc-panel-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* GPU Gliding Pill — mathematically frames the active row (top: 0 +
+ * translateY(row.offsetTop), height = row.offsetHeight) so icon/text
+ * sit with identical padding above and below. */
+.nc-pill {
+  position: absolute;
+  inset-inline: 8px;
+  top: 0px;
+  margin: 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(245, 158, 11, 0.24);
+  border-radius: 0.625rem;
+  pointer-events: none;
+  z-index: 1;
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), height 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform, height;
+}
+
+/* Amber leading edge indicator on the gliding pill */
+.nc-pill::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: -1px;
+  width: 3.5px;
+  background: #f59e0b;
+  border-radius: 4px;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.8), 0 0 3px rgba(245, 158, 11, 0.9);
+}
+
+/* Studio Keycaps — single border + bottom lip, no multi-shadow stacks */
+.nc-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #a8b0be;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 0.375rem;
+  transition: all 140ms ease;
+  user-select: none;
+}
+
+.nc-kbd-sm {
+  height: 22px;
+  min-width: 22px;
+  padding: 0 5px;
+  font-size: 11px;
+}
+
+.nc-kbd-md {
+  height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+/* Active Keycap on selected row */
+.nc-kbd-active {
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.45);
+  border-bottom-color: rgba(245, 158, 11, 0.7);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+/* Pressed state */
+.nc-kbd:active,
+.nc-kbd-pressed {
+  transform: translateY(1.5px);
+  border-bottom-width: 1px;
+}
+
+/* Tab button active amber glow line */
+.nc-tab-btn {
+  position: relative;
+  transition: color 150ms ease;
+}
+
+.nc-tab-btn.active {
+  color: #f2f3f5;
+}
+
+.nc-tab-btn.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #f59e0b;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.7);
+  border-radius: 2px;
+}
+
+/* Custom scrollbar for command palette list */
+.nc-scroll-container::-webkit-scrollbar {
+  width: 5px;
+}
+
+.nc-scroll-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nc-scroll-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
+}
+
+.nc-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(245, 158, 11, 0.4);
+}
+
+/* Reduced motion accessibility */
+@media (prefers-reduced-motion: reduce) {
+  .nc-palette-backdrop,
+  .nc-palette-panel {
+    animation: none !important;
+  }
+  .nc-pill {
+    transition: none !important;
+  }
+  .nc-kbd {
+    transition: none !important;
+  }
+}

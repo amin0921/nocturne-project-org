@@ -1,8 +1,11 @@
 import { useSyncExternalStore } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { invoke } from '@tauri-apps/api/core'
 import { audioController } from '../services/audio-controller'
 import { getPlayerChannel, type StateUpdateMessage } from '../services/player-broadcast'
 import { toAudioUrl } from '../utils/audio-url'
+import { parseLrc, type LyricLine } from '../utils/lrcParser'
+import { fetchLyricsOnline } from '../services/lyricsService'
 
 export interface PlayerTrack {
   id: number
@@ -46,6 +49,7 @@ interface PlayerSnapshot {
   mode: PlaybackMode
   playbackError: string | null
   favorites: Set<number>
+  currentLyrics: LyricLine[]
 }
 
 type Listener = () => void
@@ -61,7 +65,8 @@ let snapshot: PlayerSnapshot = {
   isMuted: false,
   mode: 'normal',
   playbackError: null,
-  favorites: loadFavorites()
+  favorites: loadFavorites(),
+  currentLyrics: []
 }
 
 const listeners = new Set<Listener>()
@@ -174,10 +179,68 @@ function pickRandomIndex(length: number, exclude: number): number {
   return next
 }
 
+let lyricsAbortController: AbortController | null = null
+
+async function loadLyricsForTrack(track: PlayerTrack): Promise<void> {
+  lyricsAbortController?.abort()
+  const ac = new AbortController()
+  lyricsAbortController = ac
+
+  const rawPath =
+    (track as any).file_path ||
+    (typeof (track as any).id === 'string' && ((track as any).id.includes('/') || (track as any).id.includes('\\'))
+      ? (track as any).id
+      : null) ||
+    track.path ||
+    (typeof (track as any).id === 'string' ? (track as any).id : '')
+  const audioPath = typeof rawPath === 'string' ? rawPath.trim() : ''
+
+  try {
+    // 1. Try local sibling .lrc beside audio file
+    if (audioPath) {
+      const localLrc = await invoke<string | null>('get_lyrics', { filePath: audioPath })
+      if (ac.signal.aborted) return
+      if (localLrc && localLrc.trim().length > 0) {
+        const parsed = parseLrc(localLrc)
+        if (parsed.length > 0) {
+          set({ currentLyrics: parsed })
+          return
+        }
+      }
+    }
+
+    // 2. Fallback to online LRCLIB
+    if (track.title) {
+      const liveDuration = track.duration_secs ?? snapshot.duration ?? undefined
+      const onlineLrc = await fetchLyricsOnline(track.title, track.artist || '', liveDuration)
+      if (ac.signal.aborted) return
+      if (onlineLrc && onlineLrc.trim().length > 0) {
+        const parsed = parseLrc(onlineLrc)
+        set({ currentLyrics: parsed })
+        // Cache to sibling .lrc for future offline use
+        if (audioPath) {
+          invoke('save_cached_lyrics', { filePath: audioPath, content: onlineLrc }).catch((err) => {
+            console.debug('[usePlayerStore] Could not cache lyrics:', err)
+          })
+        }
+      }
+    }
+  } catch (err) {
+    if (!ac.signal.aborted) {
+      console.debug('[usePlayerStore] Lyric fetch error:', err)
+    }
+  }
+}
+
+export function setCurrentLyrics(lyrics: LyricLine[]): void {
+  set({ currentLyrics: lyrics })
+}
+
 async function startAt(index: number): Promise<void> {
   const track = snapshot.queue[index] ?? null
   if (!track) return
-  set({ index, currentTrack: track, currentTime: 0, duration: track.duration_secs })
+  set({ index, currentTrack: track, currentTime: 0, duration: track.duration_secs, currentLyrics: [] })
+  void loadLyricsForTrack(track)
   audioController.load(toAudioUrl(track.path))
   try {
     await audioController.play()
@@ -378,6 +441,7 @@ export function isTrackFavorite(trackId?: number | null): boolean {
 
 /** Cleanly pauses playback, unloads active audio, and resets queue state */
 export function clearQueue(): void {
+  lyricsAbortController?.abort()
   ensureWiring()
   try {
     audioController.pause()
@@ -393,7 +457,8 @@ export function clearQueue(): void {
     isPlaying: false,
     currentTime: 0,
     duration: null,
-    playbackError: null
+    playbackError: null,
+    currentLyrics: []
   })
 }
 
@@ -419,7 +484,8 @@ usePlayerStore.getState = () => ({
   cycleRepeat,
   toggleShuffle,
   toggleFavorite,
-  isTrackFavorite
+  isTrackFavorite,
+  setCurrentLyrics
 })
 
 // Mini-island command bridge: the floating window posts COMMAND messages;

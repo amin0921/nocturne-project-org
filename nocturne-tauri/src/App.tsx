@@ -24,12 +24,19 @@ import { useUIStore } from './stores/useUIStore'
 import { resolveCoverUrl } from './utils/cover-url'
 import {
   clearQueue,
+  cycleRepeat,
   initPlayer,
+  next,
   playTrackAt,
+  prev,
   setQueue,
+  toggleMute,
+  togglePlay,
+  toggleShuffle,
   usePlayerStore,
   type PlayerTrack
 } from './stores/usePlayerStore'
+import { CommandPalette } from './components/command-palette'
 import { cn, formatTime } from './lib/utils'
 import { useStudioHotkeys } from './hooks/useStudioHotkeys'
 import {
@@ -71,6 +78,8 @@ export default function App(): JSX.Element {
   const [isCoverViewOpen, setIsCoverViewOpen] = useState(false)
   const [dockExpanded, setDockExpanded] = useState(false)
   const [isMaximized, setIsMaximized] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [paletteTab, setPaletteTab] = useState<'commands' | 'atlas'>('commands')
 
   const view = useUIStore((s) => s.view)
   const setView = useUIStore((s) => s.setView)
@@ -214,9 +223,40 @@ export default function App(): JSX.Element {
     void reload()
   }, [reload])
 
-  // Global keyboard shortcuts: Ctrl+1 = Stage, Ctrl+2 = Library, Escape = Close CoverFlow
+  // Global keyboard shortcuts:
+  // - Ctrl+K / Cmd+K: Toggle Command Palette
+  // - / or ?: Open Shortcut Atlas (no Shift required; when not typing)
+  // - Ctrl+1: Stage View
+  // - Ctrl+2: Library View
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        setPaletteTab('commands')
+        setPaletteOpen((prev) => !prev)
+        return
+      }
+
+      const el = document.activeElement
+      const isTyping =
+        el &&
+        (el.tagName === 'INPUT' ||
+          el.tagName === 'TEXTAREA' ||
+          (el instanceof HTMLElement && el.isContentEditable))
+
+      if (
+        !isTyping &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        (e.key === '?' || e.key === '/')
+      ) {
+        e.preventDefault()
+        setPaletteTab('atlas')
+        setPaletteOpen(true)
+        return
+      }
+
       if (e.ctrlKey && e.key === '1') {
         e.preventDefault()
         setView('stage')
@@ -228,6 +268,66 @@ export default function App(): JSX.Element {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [setView])
+
+  const handleRunCommand = useCallback(
+    (actionId: string) => {
+      switch (actionId) {
+        case 'toggle-play':
+          togglePlay()
+          break
+        case 'next-track':
+          void next()
+          break
+        case 'prev-track':
+          void prev()
+          break
+        case 'toggle-mute':
+          toggleMute()
+          break
+        case 'toggle-shuffle':
+          toggleShuffle()
+          break
+        case 'cycle-repeat':
+          cycleRepeat()
+          break
+        case 'go-stage':
+          setView('stage')
+          break
+        case 'go-library':
+          setView('library')
+          break
+        case 'focus-search':
+          setView('library')
+          setTimeout(() => {
+            const searchInput = document.querySelector<HTMLInputElement>(
+              'input[aria-label="Search library"]'
+            )
+            searchInput?.focus()
+            searchInput?.select()
+          }, 60)
+          break
+        case 'toggle-lyrics':
+          useUIStore.getState().toggleLyrics()
+          break
+        case 'open-coverflow':
+          setIsCoverViewOpen(true)
+          break
+        case 'toggle-miniplayer':
+          try {
+            const win = getCurrentWindow()
+            void win.minimize()
+          } catch (err) {
+            console.debug('Window minimize error:', err)
+          }
+          break
+        case 'open-atlas':
+          setPaletteTab('atlas')
+          setPaletteOpen(true)
+          break
+      }
+    },
+    [setView]
+  )
 
   // Studio transport hotkeys: Space / Arrow±5s / L (lyrics) / M (mute),
   // with a typing-focus guard so the library search field stays untouched.
@@ -657,7 +757,7 @@ export default function App(): JSX.Element {
         <footer
           data-player-bar="true"
           className={cn(
-            'island island-player pointer-events-auto z-20 transition-opacity duration-200',
+            'island island-player pointer-events-auto z-40 relative transition-opacity duration-200',
             isCoverViewOpen && 'invisible pointer-events-none'
           )}
           aria-label="Player controls"
@@ -762,6 +862,14 @@ export default function App(): JSX.Element {
             setPendingRemove(null)
             void removeTrack(id)
           }}
+        />
+
+        {/* Studio Command Palette & Shortcut Atlas */}
+        <CommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          onRunCommand={handleRunCommand}
+          initialTab={paletteTab}
         />
       </div>
     </ErrorBoundary>

@@ -42,6 +42,54 @@ export function cleanTrackMetadata(title: string, artist: string): { cleanTitle:
   return { cleanTitle, cleanArtist }
 }
 
+/**
+ * Extracts multiple search candidates for titles with bilingual representations or separators.
+ * Handles patterns like "بیم / BEEM", "BEEM / بیم", "Yas - Beem (بیم)", "یا مولا (Ya Mola)".
+ */
+export function getTitleCandidates(rawTitle: string): string[] {
+  const clean = sanitizeQueryText(rawTitle)
+  if (!clean) return []
+
+  const candidates: string[] = [clean]
+
+  // Check for slashes, pipes, or backslashes e.g. "بیم / BEEM", "BEEM | بیم"
+  if (/[\/|\\]/.test(clean)) {
+    const parts = clean
+      .split(/\s*[\/|\\]\s*/)
+      .map(sanitizeQueryText)
+      .filter(Boolean)
+    for (const p of parts) {
+      if (p && !candidates.includes(p)) {
+        candidates.push(p)
+      }
+    }
+  }
+
+  // Check for dash separation e.g. "Yas - Beem" or "بیم - Beem"
+  if (clean.includes(' - ')) {
+    const parts = clean
+      .split(/\s+-\s+/)
+      .map(sanitizeQueryText)
+      .filter(Boolean)
+    for (const p of parts) {
+      if (p && !candidates.includes(p)) {
+        candidates.push(p)
+      }
+    }
+  }
+
+  // Check for parentheses e.g. "Beem (بیم)", "یا مولا (Ya Mola)"
+  const parenMatch = clean.match(/^([^(]+)\(([^)]+)\)$/)
+  if (parenMatch) {
+    const main = sanitizeQueryText(parenMatch[1])
+    const inside = sanitizeQueryText(parenMatch[2])
+    if (main && !candidates.includes(main)) candidates.push(main)
+    if (inside && !candidates.includes(inside)) candidates.push(inside)
+  }
+
+  return candidates
+}
+
 interface LrcLibItem {
   id?: number
   trackName?: string
@@ -55,9 +103,8 @@ interface LrcLibItem {
 
 /**
  * Fetches synchronized LRC lyrics from LRCLIB (open-source synced lyrics API).
- * Tries exact match first via /api/get (with the rounded local duration for
- * strict edition matching), then falls back to /api/search — results there are
- * filtered to the duration-matching edition (±2s) when a duration is provided.
+ * Tries exact match first via /api/get across title candidates, then falls back
+ * to /api/search?q=... for bilingual / Persian queries.
  * Gracefully returns null if no lyrics are found or on network issues. Never throws.
  */
 export async function fetchLyricsOnline(
@@ -70,73 +117,94 @@ export async function fetchLyricsOnline(
     return null
   }
 
+  const titleCandidates = getTitleCandidates(title)
+  if (!titleCandidates.includes(cleanTitle)) {
+    titleCandidates.unshift(cleanTitle)
+  }
+
   const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), 6000)
+  const timeoutId = window.setTimeout(() => controller.abort(), 7000)
 
   try {
-    // 1. Try exact match endpoint: https://lrclib.net/api/get
-    const getParams = new URLSearchParams()
-    getParams.set('track_name', cleanTitle)
-    if (cleanArtist) {
-      getParams.set('artist_name', cleanArtist)
-    }
-    if (duration && duration > 0) {
-      getParams.set('duration', Math.round(duration).toString())
-    }
-
-    const getUrl = `https://lrclib.net/api/get?${getParams.toString()}`
-    const getRes = await fetch(getUrl, {
-      signal: controller.signal,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Nocturne-MusicPlayer/0.1.0 (https://github.com/nocturne-player/nocturne)'
-      }
-    })
-
-    if (getRes.status === 200) {
-      const data = (await getRes.json()) as LrcLibItem
-      if (data?.syncedLyrics && typeof data.syncedLyrics === 'string') {
-        window.clearTimeout(timeoutId)
-        return data.syncedLyrics
-      }
-    }
-
-    // 2. If exact match didn't yield syncedLyrics, try search fallback: https://lrclib.net/api/search
-    const searchParams = new URLSearchParams()
-    searchParams.set('track_name', cleanTitle)
-    if (cleanArtist) {
-      searchParams.set('artist_name', cleanArtist)
-    }
-
-    const searchUrl = `https://lrclib.net/api/search?${searchParams.toString()}`
-    const searchRes = await fetch(searchUrl, {
-      signal: controller.signal,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Nocturne-MusicPlayer/0.1.0 (https://github.com/nocturne-player/nocturne)'
-      }
-    })
-
-    if (searchRes.status === 200) {
-      const results = (await searchRes.json()) as LrcLibItem[]
-      if (Array.isArray(results) && results.length > 0) {
-        // Candidates with non-empty syncedLyrics
-        const candidates = results.filter((r) => r.syncedLyrics && r.syncedLyrics.trim().length > 0)
-        if (candidates.length > 0) {
-          // Strict edition matching: prefer a result whose duration matches the
-          // local audio exactly (±2s rounding tolerance) so we never latch onto
-          // an alternate release (album version vs radio edit, extended intro…).
-          let match = candidates[0]
-          if (duration && duration > 0) {
-            const target = Math.round(duration)
-            match =
-              candidates.find(
-                (r) => typeof r.duration === 'number' && Math.abs(r.duration - target) <= 2
-              ) ?? candidates[0]
-          }
-          window.clearTimeout(timeoutId)
-          return match.syncedLyrics ?? null
+    // 1. Try exact match endpoint: https://lrclib.net/api/get for each candidate
+    for (const candidateTitle of titleCandidates) {
+      try {
+        const getParams = new URLSearchParams()
+        getParams.set('track_name', candidateTitle)
+        if (cleanArtist) {
+          getParams.set('artist_name', cleanArtist)
         }
+        if (duration && duration > 0) {
+          getParams.set('duration', Math.round(duration).toString())
+        }
+
+        const getUrl = `https://lrclib.net/api/get?${getParams.toString()}`
+        const getRes = await fetch(getUrl, {
+          signal: controller.signal,
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'Nocturne-MusicPlayer/0.1.0 (https://github.com/nocturne-player/nocturne)'
+          }
+        })
+
+        if (getRes.status === 200) {
+          const data = (await getRes.json()) as LrcLibItem
+          if (data?.syncedLyrics && typeof data.syncedLyrics === 'string' && data.syncedLyrics.trim().length > 0) {
+            window.clearTimeout(timeoutId)
+            return data.syncedLyrics
+          }
+        }
+      } catch {
+        // Continue to next candidate
+      }
+    }
+
+    // 2. Fallback to search endpoint: https://lrclib.net/api/search?q=
+    const searchQueries: string[] = []
+    const baseQuery = `${cleanTitle} ${cleanArtist}`.trim()
+    searchQueries.push(baseQuery)
+
+    for (const t of titleCandidates) {
+      const qWithArtist = `${t} ${cleanArtist}`.trim()
+      if (!searchQueries.includes(qWithArtist)) {
+        searchQueries.push(qWithArtist)
+      }
+      if (t.length > 2 && !searchQueries.includes(t)) {
+        searchQueries.push(t)
+      }
+    }
+
+    for (const query of searchQueries) {
+      try {
+        const searchUrl = `https://lrclib.net/api/search?q=${encodeURIComponent(query)}`
+        const searchRes = await fetch(searchUrl, {
+          signal: controller.signal,
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'Nocturne-MusicPlayer/0.1.0 (https://github.com/nocturne-player/nocturne)'
+          }
+        })
+
+        if (searchRes.status === 200) {
+          const results = (await searchRes.json()) as LrcLibItem[]
+          if (Array.isArray(results) && results.length > 0) {
+            const candidates = results.filter((r) => r.syncedLyrics && r.syncedLyrics.trim().length > 0)
+            if (candidates.length > 0) {
+              let match = candidates[0]
+              if (duration && duration > 0) {
+                const target = Math.round(duration)
+                match =
+                  candidates.find(
+                    (r) => typeof r.duration === 'number' && Math.abs(r.duration - target) <= 3
+                  ) ?? candidates[0]
+              }
+              window.clearTimeout(timeoutId)
+              return match.syncedLyrics ?? null
+            }
+          }
+        }
+      } catch {
+        // Continue to next query
       }
     }
 
@@ -144,7 +212,6 @@ export async function fetchLyricsOnline(
     return null
   } catch (err) {
     window.clearTimeout(timeoutId)
-    // Graceful offline fallback: log silently and return null
     return null
   }
 }

@@ -93,6 +93,7 @@ export function LyricsPane({
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const currentTime = usePlayerStore((s) => s.currentTime)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
+  const currentLyrics = usePlayerStore((s) => s.currentLyrics)
 
   const [fetchedLyrics, setFetchedLyrics] = useState<LyricLine[]>([])
   const [isSearching, setIsSearching] = useState(false)
@@ -104,10 +105,33 @@ export function LyricsPane({
   // Fetch sibling .lrc file or query LRCLIB if no explicit lyrics prop is passed
   useEffect(() => {
     if (propsLyrics !== undefined) {
+      if (typeof propsLyrics === 'string') {
+        const parsed = parseLrc(propsLyrics)
+        setFetchedLyrics(parsed)
+        usePlayerStore.getState().setCurrentLyrics(parsed)
+      } else if (Array.isArray(propsLyrics)) {
+        setFetchedLyrics(propsLyrics)
+        usePlayerStore.getState().setCurrentLyrics(propsLyrics)
+      }
       return
     }
 
-    const trackPath = currentTrack?.path || (currentTrack as any)?.file_path
+    // If usePlayerStore already populated currentLyrics, use them immediately
+    if (currentLyrics.length > 0) {
+      setIsSearching(false)
+      return
+    }
+
+    const rawPath =
+      (currentTrack as any)?.file_path ||
+      (typeof (currentTrack as any)?.id === 'string' &&
+      ((currentTrack as any)?.id.includes('/') || (currentTrack as any)?.id.includes('\\'))
+        ? (currentTrack as any)?.id
+        : null) ||
+      currentTrack?.path ||
+      (typeof (currentTrack as any)?.id === 'string' ? (currentTrack as any)?.id : '')
+    const trackPath = typeof rawPath === 'string' ? rawPath.trim() : ''
+
     if (!trackPath || !currentTrack) {
       setFetchedLyrics([])
       return
@@ -125,6 +149,7 @@ export function LyricsPane({
           const parsed = parseLrc(localLrc)
           if (parsed.length > 0) {
             setFetchedLyrics(parsed)
+            usePlayerStore.getState().setCurrentLyrics(parsed)
             setIsSearching(false)
             return
           }
@@ -146,6 +171,7 @@ export function LyricsPane({
           if (onlineLrc && onlineLrc.trim().length > 0) {
             const parsed = parseLrc(onlineLrc)
             setFetchedLyrics(parsed)
+            usePlayerStore.getState().setCurrentLyrics(parsed)
 
             // Step 3: Background cache to sibling .lrc file for future offline use
             invoke('save_cached_lyrics', { filePath: trackPath, content: onlineLrc })
@@ -173,7 +199,7 @@ export function LyricsPane({
     return () => {
       isCancelled = true
     }
-  }, [currentTrack?.path, (currentTrack as any)?.file_path, currentTrack?.title, currentTrack?.artist, propsLyrics])
+  }, [currentTrack?.path, (currentTrack as any)?.file_path, currentTrack?.title, currentTrack?.artist, propsLyrics, currentLyrics.length])
 
   // Compute final parsed lines
   const parsedLines = useMemo<LyricLine[]>(() => {
@@ -184,8 +210,8 @@ export function LyricsPane({
       }
       return propsLyrics
     }
-    return fetchedLyrics
-  }, [propsLyrics, fetchedLyrics])
+    return fetchedLyrics.length > 0 ? fetchedLyrics : currentLyrics
+  }, [propsLyrics, fetchedLyrics, currentLyrics])
 
   // Determine current active lyric line based on playback currentTime.
   // manualOffset (user fine-tune) is added to each line's timestamp so a nudge

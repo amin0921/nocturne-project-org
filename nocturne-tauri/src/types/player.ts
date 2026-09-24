@@ -2,7 +2,7 @@
  * Nocturne Space-Grade Shared Types and Player Utilities
  * Aligned with Nocturne UI Specifications.
  */
-
+export type { LyricLine, LyricWord } from '../utils/lrcParser'
 export interface Track {
   id: number | string
   title: string

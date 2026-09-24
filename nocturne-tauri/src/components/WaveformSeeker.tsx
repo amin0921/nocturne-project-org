@@ -1,10 +1,33 @@
-import React, { useId, useRef, useState, useCallback, useEffect } from 'react'
-import { formatTime } from '../types/player'
+import React, { useId, useRef, useState, useCallback, useEffect, useMemo } from 'react'
+import { formatTime, type LyricLine } from '../types/player'
 import { cn } from '../lib/utils'
+import { usePlayerStore } from '../stores/usePlayerStore'
 
 const VIEW_W = 600
 const VIEW_H = 44
 const BAR_COUNT = 72
+
+/**
+ * Binary search for the matching active lyric line.
+ * O(log N) lookup ensures silky 60fps/144fps tracking during pointer hover without layout jitter.
+ */
+function findActivePreviewLine<T extends { time: number }>(lines: T[], previewTime: number): T | undefined {
+  if (!lines || lines.length === 0) return undefined
+  let low = 0
+  let high = lines.length - 1
+  let result: T | undefined = undefined
+
+  while (low <= high) {
+    const mid = (low + high) >> 1
+    if (lines[mid].time <= previewTime) {
+      result = lines[mid]
+      low = mid + 1
+    } else {
+      high = mid - 1
+    }
+  }
+  return result
+}
 
 export interface WaveformSeekerProps {
   /** Normalized peaks, 0..1. If empty, renders an idle shimmer placeholder. */
@@ -16,6 +39,7 @@ export interface WaveformSeekerProps {
   isPlaying: boolean
   onSeek: (ratio: number) => void // 0..1
   className?: string
+  lyrics?: LyricLine[] | { time: number; text: string }[]
 }
 
 /**
@@ -30,8 +54,12 @@ export function WaveformSeeker({
   duration,
   isPlaying: _isPlaying,
   onSeek,
-  className
+  className,
+  lyrics: propsLyrics
 }: WaveformSeekerProps): JSX.Element {
+  const storeLyrics = usePlayerStore((s) => s.currentLyrics)
+  const activeLyrics = propsLyrics ?? storeLyrics ?? []
+
   const [hoverRatio, setHoverRatio] = useState<number | null>(null)
   const [scrubbing, setScrubbing] = useState(false)
   const svgRef = useRef<SVGSVGElement>(null)
@@ -58,6 +86,30 @@ export function WaveformSeeker({
   }, [])
 
   const previewRatio = hoverRatio ?? (scrubbing ? progress : null)
+  const previewTime = previewRatio !== null ? previewRatio * duration : 0
+
+  const activePreviewLine = useMemo(() => {
+    if (previewRatio === null || activeLyrics.length === 0) return undefined
+    return findActivePreviewLine(activeLyrics, previewTime)
+  }, [activeLyrics, previewRatio, previewTime])
+
+  const lyricSnippet = useMemo(() => {
+    if (previewRatio === null) return null
+    if (activePreviewLine && activePreviewLine.text && activePreviewLine.text.trim().length > 0) {
+      if (previewTime - activePreviewLine.time < 12) {
+        return activePreviewLine.text.trim()
+      }
+      return '♪'
+    }
+    if (activeLyrics.length > 0) {
+      return '♪'
+    }
+    return null
+  }, [previewRatio, activePreviewLine, previewTime, activeLyrics.length])
+
+  // Boundary Clamping: clamp horizontal left percentage so the floating capsule
+  // stays comfortably within screen boundaries without clipping at track start or end.
+  const clampedPercent = previewRatio !== null ? Math.max(8, Math.min(92, previewRatio * 100)) : 50
 
   const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return
@@ -121,13 +173,26 @@ export function WaveformSeeker({
 
   return (
     <div className={cn('group relative w-full select-none flex items-center', className)}>
-      {/* hover / scrub timestamp bubble */}
+      {/* hover / scrub lyric-aware floating preview capsule */}
       {previewRatio !== null && (
         <div
-          className="numeric pointer-events-none absolute -top-8 z-20 -translate-x-1/2 rounded-md border border-white/10 bg-[#0D0F15] px-2 py-0.5 text-[11px] font-mono text-amber-400 shadow-xl"
-          style={{ left: `${previewRatio * 100}%` }}
+          className="pointer-events-none absolute bottom-[calc(100%+14px)] z-50 -translate-x-1/2 flex flex-col items-center gap-0.5 rounded-xl border border-white/10 bg-[#121419]/95 px-3 py-1.5 backdrop-blur-xl transition-opacity duration-150 ease-out select-none max-w-[280px]"
+          style={{
+            left: `${clampedPercent}%`,
+            boxShadow: '0 16px 36px -4px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.12)'
+          }}
         >
-          {formatTime(previewRatio * duration)}
+          <span className="numeric text-[11px] font-semibold text-[#f59e0b]">
+            {formatTime(previewRatio * duration)}
+          </span>
+          {lyricSnippet && (
+            <span
+              dir="auto"
+              className="truncate text-[11px] font-medium text-white/85 max-w-[240px] text-center"
+            >
+              {lyricSnippet}
+            </span>
+          )}
         </div>
       )}
 
