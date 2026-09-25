@@ -101,12 +101,29 @@ interface LrcLibItem {
   syncedLyrics?: string
 }
 
+/** Result of an online lyrics fetch: raw LRC text + its [offset:±ms] header tag. */
+export interface LrcFetchResult {
+  lrc: string
+  tagOffsetMs: number
+}
+
+/**
+ * Parses the standard LRC header tag `[offset:±ms]` (whitespace tolerated).
+ * Returns 0 when the header is absent or malformed. The value is passed into
+ * the sync engine: effectiveTime = currentTime + (tagOffsetMs + userTrimMs) / 1000.
+ */
+export function parseLrcOffsetTag(rawLrc: string): number {
+  const offsetMatch = rawLrc.match(/^\[offset:\s*([+-]?\d+)\s*\]/m)
+  return offsetMatch ? parseInt(offsetMatch[1], 10) : 0
+}
+
 /**
  * Strict candidate validation for LRCLIB results.
  * Rejects any record that: has no synced lyrics, does not mention the target
- * artist (case-insensitive, either-direction substring), or is more than 5s
+ * artist (case-insensitive, either-direction substring), or is more than 4s
  * away from the track duration (when both durations are known).
- * Never lets a same-title track by a DIFFERENT artist pass.
+ * Never lets a same-title track by a DIFFERENT artist pass, and never lets an
+ * edition (radio edit / live intro running ~10s off) pass as the real track.
  */
 export function isCandidateValid(
   candidate: LrcLibItem | null | undefined,
@@ -127,15 +144,17 @@ export function isCandidateValid(
     if (!artistMatches) return false
   }
 
-  // 2. Strict duration match (±5 seconds tolerance when both sides know duration)
+  // 2. Mandatory strict duration match (±4 seconds tolerance when both sides
+  //    know the duration). A radio edit with a 10s-shorter intro, a clean edit
+  //    or a remaster must never slip through: its timestamps desync every line.
   if (
     typeof targetDuration === 'number' &&
     targetDuration > 0 &&
     typeof candidate.duration === 'number' &&
-    Number.isFinite(candidate.duration)
+    Number.isFinite(candidate.duration) &&
+    Math.abs(candidate.duration - targetDuration) > 4
   ) {
-    const diff = Math.abs(candidate.duration - targetDuration)
-    if (diff > 5) return false
+    return false
   }
 
   return true
@@ -143,15 +162,31 @@ export function isCandidateValid(
 
 /**
  * Fetches synchronized LRC lyrics from LRCLIB (open-source synced lyrics API).
- * Tries exact match first via /api/get across title candidates, then falls back
- * to /api/search?q=... for bilingual / Persian queries.
+ * Patch 137: LRCLIB `/api/get` is PERMANENTLY DEPRECATED — it ORDERs BY
+ * tracks.id and returns the OLDEST record in the ±2s window, which on new
+ * singles is almost always synchronized against the official video (5-10s
+ * intro skit/logo) and caused the documented lyric drift. Candidates are
+ * now queried exclusively via `/api/search?track_name=&artist_name=` and the
+ * winner is picked by absolute nearest fractional duration to the audio master:
+ * minBy(|r.duration - trackDuration|), gated by a mandatory ±4s window and a
+ * strict artist check (isCandidateValid) once the duration is derivable.
+ * The LRC header `[offset:±ms]` is parsed here and returned as `tagOffsetMs`
+ * so the sync engine can apply it exactly once:
+ * effectiveTime = currentTime + (tagOffsetMs + userTrimMs) / 1000.
  * Gracefully returns null if no lyrics are found or on network issues. Never throws.
  */
 export async function fetchLyricsOnline(
   title: string,
   artist: string,
   duration?: number
-): Promise<string | null> {
+): Promise<LrcFetchResult | null> {
+  // Single source of truth for edition matching: seconds, finite, > 0.
+  // Anything else means the duration is genuinely underivable for this call.
+  const targetDuration =
+    typeof duration === 'number' && Number.isFinite(duration) && duration > 0
+      ? duration
+      : undefined
+
   const { cleanTitle, cleanArtist } = cleanTrackMetadata(title, artist)
   if (!cleanTitle) {
     return null
@@ -166,57 +201,18 @@ export async function fetchLyricsOnline(
   const timeoutId = window.setTimeout(() => controller.abort(), 7000)
 
   try {
-    // 1. Try exact match endpoint: https://lrclib.net/api/get for each candidate
+    // /api/search is the ONLY LRCLIB endpoint used (Patch 137). One query per
+    // title candidate (bilingual titles etc.), always in the
+    // track_name + artist_name form — never /api/get, never a bare q= term.
     for (const candidateTitle of titleCandidates) {
       try {
-        const getParams = new URLSearchParams()
-        getParams.set('track_name', candidateTitle)
+        const searchParams = new URLSearchParams()
+        searchParams.set('track_name', candidateTitle)
         if (cleanArtist) {
-          getParams.set('artist_name', cleanArtist)
-        }
-        if (duration && duration > 0) {
-          getParams.set('duration', Math.round(duration).toString())
+          searchParams.set('artist_name', cleanArtist)
         }
 
-        const getUrl = `https://lrclib.net/api/get?${getParams.toString()}`
-        const getRes = await fetch(getUrl, {
-          signal: controller.signal,
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'Nocturne-MusicPlayer/0.1.0 (https://github.com/nocturne-player/nocturne)'
-          }
-        })
-
-        if (getRes.status === 200) {
-          const data = (await getRes.json()) as LrcLibItem
-          if (isCandidateValid(data, cleanArtist, duration)) {
-            window.clearTimeout(timeoutId)
-            return data.syncedLyrics ?? null
-          }
-        }
-      } catch {
-        // Continue to next candidate
-      }
-    }
-
-    // 2. Fallback to search endpoint: https://lrclib.net/api/search?q=
-    const searchQueries: string[] = []
-    const baseQuery = `${cleanTitle} ${cleanArtist}`.trim()
-    searchQueries.push(baseQuery)
-
-    for (const t of titleCandidates) {
-      const qWithArtist = `${t} ${cleanArtist}`.trim()
-      if (!searchQueries.includes(qWithArtist)) {
-        searchQueries.push(qWithArtist)
-      }
-      if (t.length > 2 && !searchQueries.includes(t)) {
-        searchQueries.push(t)
-      }
-    }
-
-    for (const query of searchQueries) {
-      try {
-        const searchUrl = `https://lrclib.net/api/search?q=${encodeURIComponent(query)}`
+        const searchUrl = `https://lrclib.net/api/search?${searchParams.toString()}`
         const searchRes = await fetch(searchUrl, {
           signal: controller.signal,
           headers: {
@@ -228,34 +224,44 @@ export async function fetchLyricsOnline(
         if (searchRes.status === 200) {
           const results = (await searchRes.json()) as LrcLibItem[]
           if (Array.isArray(results) && results.length > 0) {
-            // STRICT: only candidates whose artist (and duration) verify against this track
-            const valid = results.filter((r) => isCandidateValid(r, cleanArtist, duration))
-            if (valid.length > 0) {
-              let match = valid[0]
-              if (duration && duration > 0) {
-                match = valid.reduce((best, r) => {
-                  const bestDiff =
-                    typeof best.duration === 'number' && Number.isFinite(best.duration)
-                      ? Math.abs(best.duration - duration)
-                      : Number.POSITIVE_INFINITY
-                  const rDiff =
-                    typeof r.duration === 'number' && Number.isFinite(r.duration)
-                      ? Math.abs(r.duration - duration)
-                      : Number.POSITIVE_INFINITY
-                  return rDiff < bestDiff ? r : best
-                })
-              }
-              if (match.syncedLyrics && match.syncedLyrics.trim().length > 0) {
-                window.clearTimeout(timeoutId)
-                return match.syncedLyrics
+            // Filter: synced lyrics present, NOT instrumental, duration known,
+            // artist verified, and within the mandatory ±4s duration window
+            // whenever the audio master's duration is derivable.
+            const valid = results.filter(
+              (r) =>
+                !!r.syncedLyrics &&
+                !r.instrumental &&
+                typeof r.duration === 'number' &&
+                Number.isFinite(r.duration) &&
+                isCandidateValid(r, cleanArtist, targetDuration)
+            )
+
+            if (targetDuration) {
+              // Nearest-fractional selection: among all surviving candidates,
+              // minBy(|r.duration - targetDuration|) — the album master's LRC
+              // (matching the audio file length) always beats an upload that
+              // was synchronized against the official video (5-10s intro skit).
+              const durationDiff = (r: LrcLibItem): number =>
+                typeof r.duration === 'number' && Number.isFinite(r.duration)
+                  ? Math.abs(r.duration - targetDuration)
+                  : Number.POSITIVE_INFINITY
+              valid.sort((a, b) => durationDiff(a) - durationDiff(b))
+            }
+
+            const best = valid[0]
+            if (best && best.syncedLyrics && best.syncedLyrics.trim().length > 0) {
+              window.clearTimeout(timeoutId)
+              return {
+                lrc: best.syncedLyrics,
+                tagOffsetMs: parseLrcOffsetTag(best.syncedLyrics)
               }
             }
-            // No verified candidate on this query — keep trying other queries,
+            // No verified candidate on this title — keep trying other titles,
             // never accept another artist's song with the same title.
           }
         }
       } catch {
-        // Continue to next query
+        // Continue to next title candidate
       }
     }
 

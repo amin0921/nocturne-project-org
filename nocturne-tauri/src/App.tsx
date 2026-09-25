@@ -4,7 +4,7 @@ import { emit, listen } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalPosition, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { Copy, Disc3, Minus, Play, Square, Trash2, X } from 'lucide-react'
+import { Copy, Disc3, FileAudio, Minus, Play, Square, Trash2, X } from 'lucide-react'
 import CoverFlowView from './components/CoverFlowView'
 import { CinemaStage } from './components/cinema'
 import PlayerBar from './components/PlayerBar'
@@ -528,6 +528,41 @@ export default function App(): JSX.Element {
     return 'Scanning…'
   }, [scanProgress])
 
+  // "Add Files": native multi-select file dialog (not a folder picker), so every
+  // audio track is visible in Explorer with name/size before selection. Backend
+  // picks the dialog (`pick_audio_files`) and indexes the paths (`import_audio_files`).
+  const addFiles = useCallback(async () => {
+    try {
+      // 1. Guard dialog: no UI state mutations until files are actually chosen
+      const selected = await invoke<string[] | null>('pick_audio_files')
+      if (!selected || selected.length === 0) {
+        // User cancelled dialog — zero state mutations, zero queries
+        return
+      }
+
+      // 2. Files confirmed: show busy feedback while metadata is read + stored
+      setScanning(true)
+      setScanProgress(null)
+      setNotice(
+        `Importing ${selected.length} selected file${selected.length === 1 ? '' : 's'}...`
+      )
+
+      const count = await invoke<number>('import_audio_files', { filePaths: selected })
+      if (count > 0) {
+        setNotice(`Imported ${count} track${count === 1 ? '' : 's'}`)
+      } else {
+        setNotice('No new audio tracks imported')
+      }
+      await reload()
+    } catch (err) {
+      console.error('[Import files error]:', err)
+      setNotice(`Import failed: ${String(err)}`)
+    } finally {
+      setScanning(false)
+      setScanProgress(null)
+    }
+  }, [reload])
+
   const removeTrack = useCallback(
     async (id: number) => {
       const previous = tracks
@@ -630,6 +665,16 @@ export default function App(): JSX.Element {
           >
             {scanning && <Spinner size="xs" />}
             <span>{scanning ? scanLabel : 'Add Folder'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void addFiles()}
+            disabled={scanning}
+            title="Select audio files directly"
+            className="flex h-8 items-center gap-1.5 rounded-lg border border-white/10 bg-raised/80 px-3 text-xs font-medium text-ink hover:bg-line disabled:opacity-50 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#f59e0b]"
+          >
+            <FileAudio size={14} className="text-amber-400" aria-hidden />
+            <span>Add Files</span>
           </button>
         </div>
       </div>

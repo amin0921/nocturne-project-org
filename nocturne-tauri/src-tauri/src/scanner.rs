@@ -4,7 +4,7 @@ use lofty::picture::{Picture, PictureType};
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::read_from_path;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use std::hash::{DefaultHasher, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -388,6 +388,101 @@ pub fn scan_folder_into_db_with_covers(
     Ok(upserted)
 }
 
+/// Index explicitly user-selected files (native "Add Files" picker) into the DB.
+/// No recursion and no missing-sweep: each path is validated (`..` rejected,
+/// canonicalized, must exist and pass `is_supported`) and upserted under its own
+/// parent folder row so a later folder scan dedupes by `file_path`.
+/// Returns the count of newly indexed tracks — already-catalogued files refresh
+/// their metadata but are not counted again.
+pub fn import_files_into_db(
+    state: &DbState,
+    files: &[PathBuf],
+    covers_dir: Option<&Path>,
+) -> Result<usize, String> {
+    let now = now_ms();
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut folder_ids: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut imported = 0usize;
+
+    for raw in files {
+        // IPC-side guard: no parent traversal ever reaches the filesystem.
+        if raw.to_string_lossy().contains("..") {
+            continue;
+        }
+        let canonical = match raw.canonicalize() {
+            Ok(p) => p,
+            Err(_) => continue, // vanished or malformed: skip, never crash
+        };
+        if !canonical.is_file() || !is_supported(&canonical) {
+            continue;
+        }
+
+        let parent_text = strip_verbatim(
+            canonical
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_string_lossy()
+                .as_ref(),
+        );
+        let folder_id = match folder_ids.get(&parent_text) {
+            Some(id) => *id,
+            None => {
+                conn.execute(
+                    "INSERT OR IGNORE INTO folders (folder_path, date_added) VALUES (?1, ?2)",
+                    params![parent_text, now],
+                )
+                .map_err(|e| e.to_string())?;
+                let id: i64 = conn
+                    .query_row(
+                        "SELECT id FROM folders WHERE folder_path = ?1",
+                        params![parent_text],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                folder_ids.insert(parent_text.clone(), id);
+                id
+            }
+        };
+
+        let track = match read_metadata_with_covers(&canonical, covers_dir) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        // Persist the display form: `canonicalize()` yields `\\?\...` on Windows.
+        let db_path = strip_verbatim(&track.path);
+        let exists = conn
+            .query_row(
+                "SELECT 1 FROM tracks WHERE file_path = ?1",
+                params![db_path],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        conn.execute(
+            UPSERT_SQL,
+            params![
+                db_path,
+                folder_id,
+                track.title,
+                track.artist,
+                track.album,
+                track.year,
+                track.duration_secs,
+                track.file_size,
+                track.mtime_ms,
+                now,
+                track.cover_url
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        if !exists {
+            imported += 1;
+        }
+    }
+    Ok(imported)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -637,5 +732,58 @@ mod tests {
         let h2 = hash_bytes(&jpeg_data);
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 16);
+    }
+
+    #[test]
+    fn import_files_indexes_supported_and_skips_the_rest() {
+        let dir = unique_dir("import");
+        let good = dir.join("Mystery - Static.mp3");
+        fs::write(&good, b"definitely not audio").unwrap();
+        fs::write(dir.join("skip.flac"), b"x").unwrap();
+        fs::write(dir.join("notes.txt"), b"x").unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::init_conn(&conn).unwrap();
+        let state = DbState(Mutex::new(conn));
+
+        let picked = vec![
+            good.clone(),
+            dir.join("skip.flac"),
+            dir.join("notes.txt"),
+            dir.join("..").join("escape.mp3"), // `..` guard rejects before fs access
+            dir.join("ghost.mp3"),             // never written: canonicalize fails
+        ];
+        let n = import_files_into_db(&state, &picked, None).unwrap();
+        assert_eq!(n, 1, "only the supported, existing file is indexed");
+
+        let rows: i64 = state
+            .0
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM tracks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        let title: String = state
+            .0
+            .lock()
+            .unwrap()
+            .query_row("SELECT title FROM tracks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "Static");
+        let folder_path: String = state
+            .0
+            .lock()
+            .unwrap()
+            .query_row("SELECT folder_path FROM folders", [], |r| r.get(0))
+            .unwrap();
+        let expected_folder = strip_verbatim(&dir.canonicalize().unwrap().to_string_lossy());
+        assert_eq!(folder_path, expected_folder, "parent folder must be registered");
+
+        // Re-importing the same file refreshes metadata but is not "new".
+        let n2 = import_files_into_db(&state, std::slice::from_ref(&good), None).unwrap();
+        assert_eq!(n2, 0);
+
+        drop(state);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

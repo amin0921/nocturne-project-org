@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useLayoutEffect, useRef, useState } from 'react'
 import { Disc3, Maximize2, MicVocal, Music } from 'lucide-react'
 import { useUIStore } from '../stores/useUIStore'
 import { usePlayerStore } from '../stores/usePlayerStore'
@@ -10,6 +10,8 @@ import { WindowGripPill } from './WindowGripPill'
 import { DynamicIslandLyrics } from './DynamicIslandLyrics'
 import { StatsDashboard } from './stats/StatsDashboard'
 import { useAmbientPalette } from '../stores/useAmbientPalette'
+import { useTrackSwapFade } from '../hooks/useTrackSwapFade'
+import { armMotionLayer, decodeThenSwap } from '../utils/artwork'
 import { resolveCoverUrl } from '../utils/cover-url'
 import { cn } from '../lib/utils'
 
@@ -34,17 +36,60 @@ export function CenterIsland({
   const view = useUIStore((s) => s.view)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
-  const [imgError, setImgError] = useState(false)
   const isLyricsExpanded = useUIStore((s) => s.lyricsOpen)
   const setLyricsOpen = useUIStore((s) => s.setLyricsOpen)
   const ambientPalette = useAmbientPalette()
 
-  useEffect(() => {
-    setImgError(false)
-    setLyricsOpen(false)
-  }, [currentTrack?.id, currentTrack?.coverUrl, setLyricsOpen])
+  // Split-stage stability across track skips:
+  // - `isLyricsExpanded` is NEVER reset because the track changed — if the
+  //   user opened lyrics, the split-stage stays open and the new cover/lyrics
+  //   cross-fade into place (no collapse/re-expand morph in the swap frame).
+  // - Artwork cover errors are tracked per-src (not a boolean), so a fresh
+  //   track's cover is never judged by the previous track's failure state.
+  // - `swapFade` hides the artwork/metadata swap pre-paint and reveals it with
+  //   a smooth opacity fade — zero remount, zero layout thrash.
+  const [failedCoverSrc, setFailedCoverSrc] = useState<string | null>(null)
+  const rawCoverSrc = resolveCoverUrl(currentTrack?.coverUrl)
+  const coverSrc = rawCoverSrc && failedCoverSrc !== rawCoverSrc ? rawCoverSrc : undefined
+  const swapFade = useTrackSwapFade(currentTrack?.id ?? null)
 
-  const coverSrc = !imgError ? resolveCoverUrl(currentTrack?.coverUrl) : undefined
+  // Pre-decoded artwork double-buffer (Patch 137): the <img> keeps showing the
+  // PREVIOUS cover until the new hi-res bytes finish decoding OFF the pipeline
+  // (decodeThenSwap + monotonic race token). Assigning a fresh src therefore
+  // never lands a synchronous decode inside the 300ms swap frame — Chromium
+  // holds back active CSS transforms while decoding (bug 1455946), which was
+  // the documented 1-2 frame drop on track swap.
+  const coverImgRef = useRef<HTMLImageElement | null>(null)
+  const [decodedCover, setDecodedCover] = useState<string | undefined>(() => coverSrc)
+
+  useLayoutEffect(() => {
+    if (!coverSrc) {
+      if (decodedCover !== undefined) setDecodedCover(undefined)
+      return
+    }
+    if (coverSrc === decodedCover) return
+    const img = coverImgRef.current
+    if (!img) {
+      // No <img> mounted yet (first paint after an absent/failed cover): there
+      // is no swap frame to protect — let the browser decode it directly.
+      setDecodedCover(coverSrc)
+      return
+    }
+    let alive = true
+    void decodeThenSwap(img, coverSrc).then((ok) => {
+      if (alive && ok) setDecodedCover(coverSrc)
+    })
+    return () => {
+      alive = false
+    }
+  }, [coverSrc, decodedCover])
+
+  // GPU layer lifecycle around track swaps / island morphs: `will-change:
+  // transform, opacity` is armed before each 300ms swap transition starts and
+  // released the moment its transitionend fires — compositing is held ONLY
+  // while the swap animates, then the full-size layer is handed back.
+  const motionWrapperRef = useRef<HTMLDivElement | null>(null)
+  useLayoutEffect(() => armMotionLayer(motionWrapperRef.current), [swapFade, isLyricsExpanded])
 
   return (
     <div className={cn('flex min-h-0 flex-1 flex-col select-none relative overflow-hidden', className)}>
@@ -81,7 +126,11 @@ export function CenterIsland({
       {view === 'stage' ? (
         currentTrack ? (
           <div
-            key={currentTrack.id}
+            /* NOTE: deliberately NOT keyed by track id — remounting this subtree
+               in the same paint frame as a track skip tears down the lyrics
+               island, restarts the artwork FLIP and re-parses lyrics all at
+               once (the documented split-stage hitch). Track swaps are handled
+               by GPU opacity cross-fades instead (useTrackSwapFade). */
             /* Cinematic stage is a permanent zero-scroll canvas: overflow-hidden
                on BOTH axes so a transient vertical scrollbar can never spawn and
                widen the stage by its gutter (~4-16px) mid-transition — the
@@ -104,18 +153,26 @@ export function CenterIsland({
                 Full-height flex wrapper preserves the original vertical thirds
                 distribution (my-auto / mb-auto) and transforms as a whole, so the
                 TiltCard, floor reflection, shadow, and metadata travel seamlessly.
+                GPU layer isolation: transform-gpu + will-change-transform +
+                backface-visibility hidden (Tailwind 3.4 ships no
+                backface-visibility utility, so the arbitrary property form
+                emits the exact declaration) — the left-shift never
+                re-rasterizes artwork.
+                `opacity` is the track-swap cross-fade (instant hide, smooth
+                reveal) — no remount, no layout thrash on skip.
                 No dimming/blur — artwork stays at full opacity like the reference. */}
             <div
+              ref={motionWrapperRef}
               className={cn(
-                'transform-gpu relative flex min-h-0 flex-1 flex-col items-center gap-2 sm:gap-4',
+                'transform-gpu will-change-transform [backface-visibility:hidden] relative flex min-h-0 flex-1 flex-col items-center gap-2 sm:gap-4',
                 isLyricsExpanded &&
                   '-translate-x-[135px] sm:-translate-x-[155px] md:-translate-x-[175px] scale-[0.88]'
               )}
               style={{
+                opacity: swapFade,
+                pointerEvents: swapFade === 1 ? undefined : 'none',
                 transition:
-                  'transform 380ms cubic-bezier(0.16, 1, 0.3, 1), width 380ms cubic-bezier(0.16, 1, 0.3, 1), height 380ms cubic-bezier(0.16, 1, 0.3, 1), right 380ms cubic-bezier(0.16, 1, 0.3, 1), top 380ms cubic-bezier(0.16, 1, 0.3, 1), border-radius 380ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 380ms cubic-bezier(0.16, 1, 0.3, 1)',
-                willChange: 'transform',
-                backfaceVisibility: 'hidden'
+                  `transform 380ms cubic-bezier(0.16, 1, 0.3, 1), opacity ${swapFade === 1 ? '300ms ease' : '0ms'}, width 380ms cubic-bezier(0.16, 1, 0.3, 1), height 380ms cubic-bezier(0.16, 1, 0.3, 1), right 380ms cubic-bezier(0.16, 1, 0.3, 1), top 380ms cubic-bezier(0.16, 1, 0.3, 1), border-radius 380ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 380ms cubic-bezier(0.16, 1, 0.3, 1)`
               }}
             >
               {/* Artwork block: Adaptive Ambient Glow + TiltCard + floor reflection.
@@ -142,11 +199,13 @@ export function CenterIsland({
                   <div className="relative h-full w-full overflow-hidden rounded-2xl border border-white/10 shadow-[0_24px_50px_-12px_rgba(0,0,0,0.8)] bg-[#121419]">
                     {coverSrc ? (
                       <img
+                        ref={coverImgRef}
                         data-stage-cover="true"
-                        src={coverSrc}
+                        src={decodedCover ?? coverSrc}
                         alt={currentTrack.title}
                         draggable={false}
-                        onError={() => setImgError(true)}
+                        decoding="async"
+                        onError={() => rawCoverSrc && setFailedCoverSrc(rawCoverSrc)}
                         className="absolute inset-0 h-full w-full object-cover"
                       />
                     ) : (
@@ -173,9 +232,10 @@ export function CenterIsland({
                   >
                     {coverSrc ? (
                       <img
-                        src={coverSrc}
+                        src={decodedCover ?? coverSrc}
                         alt=""
                         draggable={false}
+                        decoding="async"
                         className="h-full w-full object-cover"
                       />
                     ) : (

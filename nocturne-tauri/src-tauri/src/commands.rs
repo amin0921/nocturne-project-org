@@ -1,11 +1,11 @@
 //! Tauri `invoke` allowlist. Only these two commands reach the webview in this step.
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::db::DbState;
-use crate::scanner::scan_folder_into_db_with_covers;
+use crate::scanner::{import_files_into_db, scan_folder_into_db_with_covers};
 
 #[derive(serde::Serialize)]
 pub struct TrackDto {
@@ -85,6 +85,56 @@ pub async fn open_music_folder(app: AppHandle) -> Result<Option<usize>, String> 
     };
     let count = scan_folder(app, folder).await?;
     Ok(Some(count))
+}
+
+/// Native multi-select audio file picker for the "Add Files" button.
+/// Unlike the folder picker, files are visible in the Windows dialog, so users
+/// can see names/sizes and pick one or many tracks directly.
+/// Filter mirrors `scanner::SUPPORTED_EXTS` (mp3 / wav / m4a / aac) — only
+/// formats the library can actually index.
+/// Returns None when the user cancels.
+#[tauri::command]
+pub async fn pick_audio_files(app: AppHandle) -> Result<Option<Vec<String>>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Audio Files", &["mp3", "wav", "m4a", "aac"])
+        .blocking_pick_files();
+    let Some(paths) = picked else {
+        return Ok(None);
+    };
+    Ok(Some(
+        paths
+            .into_iter()
+            .filter_map(|file| file.into_path().ok())
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+    ))
+}
+
+/// Reads metadata for explicitly selected audio files and inserts new tracks
+/// into SQLite. Returns the count of newly imported tracks.
+/// Path validation, tag reads and DB writes happen in Rust only (spawn_blocking
+/// keeps them off the main thread); the webview never touches disk or SQL.
+#[tauri::command]
+pub async fn import_audio_files(app: AppHandle, file_paths: Vec<String>) -> Result<usize, String> {
+    if file_paths.is_empty() {
+        return Ok(0);
+    }
+    let covers_dir = app
+        .path()
+        .app_local_data_dir()
+        .map(|d| d.join("covers"))
+        .unwrap_or_else(|_| crate::scanner::default_covers_dir());
+    let _ = std::fs::create_dir_all(&covers_dir);
+    let files: Vec<PathBuf> = file_paths.into_iter().map(PathBuf::from).collect();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DbState>();
+        import_files_into_db(&state, &files, Some(&covers_dir))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// All catalogued tracks, newest first.
@@ -200,6 +250,53 @@ pub fn delete_cached_lyrics(file_path: String) -> Result<bool, String> {
 
     std::fs::remove_file(&lrc_path).map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+/// Reads the per-track lyric calibration offset (ms) from `lyric_offsets`.
+/// Absent track → `0` (perfectly aligned). Pure DB read — no disk writes.
+pub fn get_lyric_offset_impl(conn: &rusqlite::Connection, track_id: &str) -> Result<i32, String> {
+    let stored: Option<i32> = conn
+        .query_row(
+            "SELECT offset_ms FROM lyric_offsets WHERE track_id = ?1",
+            params![track_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(stored.unwrap_or(0))
+}
+
+/// Upserts the per-track lyric calibration offset (ms) into `lyric_offsets`.
+/// Idempotent: repeated writes for the same track keep a single row.
+pub fn set_lyric_offset_impl(
+    conn: &rusqlite::Connection,
+    track_id: &str,
+    offset_ms: i32,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO lyric_offsets (track_id, offset_ms, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(track_id) DO UPDATE SET
+           offset_ms = excluded.offset_ms,
+           updated_at = excluded.updated_at",
+        params![track_id, offset_ms, crate::db::now_ms()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Returns the saved lyric offset for one track (ms, 0 when never calibrated).
+#[tauri::command]
+pub fn get_lyric_offset(state: State<DbState>, track_id: String) -> Result<i32, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    get_lyric_offset_impl(&conn, &track_id)
+}
+
+/// Persists the lyric offset for one track (ms). SQLite only — `.lrc` files
+/// on disk are never rewritten by this command.
+#[tauri::command]
+pub fn set_lyric_offset(state: State<DbState>, track_id: String, offset_ms: i32) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    set_lyric_offset_impl(&conn, &track_id, offset_ms)
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -647,5 +744,44 @@ mod tests {
         assert_eq!(stats.top_tracks.len(), 2);
         assert_eq!(stats.top_tracks[0].title, "Track 1");
         assert_eq!(stats.top_tracks[0].value, 2.0);
+    }
+
+    #[test]
+    fn lyric_offset_absent_track_defaults_to_zero() {
+        let conn = mem_db();
+        assert_eq!(get_lyric_offset_impl(&conn, "never-seen").unwrap(), 0);
+    }
+
+    #[test]
+    fn lyric_offset_roundtrip_is_per_track() {
+        let conn = mem_db();
+        // Track A calibrated to +1.50s …
+        set_lyric_offset_impl(&conn, "track-a", 1500).unwrap();
+        // … switching to Track B must read a pristine 0.00s …
+        assert_eq!(get_lyric_offset_impl(&conn, "track-b").unwrap(), 0);
+        // … and coming back to Track A restores +1.50s.
+        assert_eq!(get_lyric_offset_impl(&conn, "track-a").unwrap(), 1500);
+    }
+
+    #[test]
+    fn lyric_offset_upsert_updates_in_place() {
+        let conn = mem_db();
+        set_lyric_offset_impl(&conn, "t1", 500).unwrap();
+        set_lyric_offset_impl(&conn, "t1", -2450).unwrap();
+        assert_eq!(get_lyric_offset_impl(&conn, "t1").unwrap(), -2450);
+        assert_eq!(count(&conn, "lyric_offsets"), 1);
+        // Reset writes a real 0 row, not a deletion — readback stays 0.
+        set_lyric_offset_impl(&conn, "t1", 0).unwrap();
+        assert_eq!(get_lyric_offset_impl(&conn, "t1").unwrap(), 0);
+        assert_eq!(count(&conn, "lyric_offsets"), 1);
+    }
+
+    #[test]
+    fn lyric_offset_accepts_full_calibration_range() {
+        let conn = mem_db();
+        for offset in [-5000_i32, -4950, -50, 0, 50, 4950, 5000] {
+            set_lyric_offset_impl(&conn, "range", offset).unwrap();
+            assert_eq!(get_lyric_offset_impl(&conn, "range").unwrap(), offset);
+        }
     }
 }

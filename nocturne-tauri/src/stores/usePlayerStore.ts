@@ -182,6 +182,40 @@ function pickRandomIndex(length: number, exclude: number): number {
 
 let lyricsAbortController: AbortController | null = null
 
+/**
+ * Resolves the playback duration in SECONDS for strict online-lyrics edition
+ * matching. The duration is MANDATORY for candidate filtering whenever it can
+ * be derived from the audio track, so this helper is what keeps the LRCLIB
+ * search from accepting an edition whose timing runs away (e.g. a radio edit
+ * with a 10s-shorter intro).
+ *
+ * Order: live store duration (scanner metadata, set synchronously by
+ * `startAt`, refreshed by `loadedmetadata`) → a bounded wait for the audio
+ * element's `loadedmetadata` event. Resolves `undefined` after `timeoutMs` so
+ * a genuinely underivable duration can never hang the lyrics pipeline.
+ */
+export function resolvePlaybackDuration(timeoutMs = 2500): Promise<number | undefined> {
+  const valid = (v: number | null | undefined): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined
+
+  const immediate = valid(snapshot.duration)
+  if (immediate) return Promise.resolve(immediate)
+
+  const el = audioController.element
+  return new Promise<number | undefined>((resolve) => {
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      el.removeEventListener('loadedmetadata', finish)
+      window.clearTimeout(timer)
+      resolve(valid(el.duration) ?? valid(snapshot.duration))
+    }
+    const timer = window.setTimeout(finish, timeoutMs)
+    el.addEventListener('loadedmetadata', finish)
+  })
+}
+
 async function loadLyricsForTrack(track: PlayerTrack): Promise<void> {
   lyricsAbortController?.abort()
   const ac = new AbortController()
@@ -212,15 +246,21 @@ async function loadLyricsForTrack(track: PlayerTrack): Promise<void> {
 
     // 2. Fallback to online LRCLIB
     if (track.title) {
-      const liveDuration = track.duration_secs ?? snapshot.duration ?? undefined
-      const onlineLrc = await fetchLyricsOnline(track.title, track.artist || '', liveDuration)
+      // Mandatory duration match: derive the track duration (scanner metadata
+      // → live audio metadata, bounded wait) so /api/search can never accept
+      // an edition whose timing runs away from the real track.
+      const targetDuration = await resolvePlaybackDuration()
       if (ac.signal.aborted) return
-      if (onlineLrc && onlineLrc.trim().length > 0) {
-        const parsed = parseLrc(onlineLrc)
+      const online = await fetchLyricsOnline(track.title, track.artist || '', targetDuration)
+      if (ac.signal.aborted) return
+      if (online && online.lrc.trim().length > 0) {
+        // tagOffsetMs (LRC [offset:±ms] header) is carried per line; the sync
+        // engine applies it exactly once alongside the user calibration.
+        const parsed = parseLrc(online.lrc, online.tagOffsetMs)
         set({ currentLyrics: parsed })
         // Cache to sibling .lrc for future offline use
         if (audioPath) {
-          invoke('save_cached_lyrics', { filePath: audioPath, content: onlineLrc }).catch((err) => {
+          invoke('save_cached_lyrics', { filePath: audioPath, content: online.lrc }).catch((err) => {
             console.debug('[usePlayerStore] Could not cache lyrics:', err)
           })
         }

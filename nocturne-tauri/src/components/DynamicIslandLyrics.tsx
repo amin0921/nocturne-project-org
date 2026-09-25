@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { MicVocal, X } from 'lucide-react'
 import { usePlayerStore } from '../stores/usePlayerStore'
+import { useLyricOffset } from '../stores/useLyricOffset'
+import { useTrackSwapFade } from '../hooks/useTrackSwapFade'
 import { LyricsPane } from './LyricsPane'
 import { cn } from '../lib/utils'
 
@@ -8,35 +10,6 @@ export interface DynamicIslandLyricsProps {
   isExpanded?: boolean
   onExpandChange?: (expanded: boolean) => void
   className?: string
-}
-
-/** Per-track fine-tune offsets live in localStorage, keyed by track id/path. */
-const OFFSET_STORAGE_PREFIX = 'nocturne:lyrics-offset:'
-const OFFSET_CLAMP_SEC = 10
-
-function loadStoredOffset(trackKey: string | null): number {
-  if (!trackKey) return 0
-  try {
-    const raw = window.localStorage.getItem(OFFSET_STORAGE_PREFIX + trackKey)
-    if (raw === null) return 0
-    const value = Number.parseFloat(raw)
-    return Number.isFinite(value)
-      ? Math.max(-OFFSET_CLAMP_SEC, Math.min(OFFSET_CLAMP_SEC, value))
-      : 0
-  } catch {
-    return 0
-  }
-}
-
-function saveStoredOffset(trackKey: string | null, value: number): void {
-  if (!trackKey) return
-  try {
-    const key = OFFSET_STORAGE_PREFIX + trackKey
-    if (value === 0) window.localStorage.removeItem(key)
-    else window.localStorage.setItem(key, String(value))
-  } catch {
-    // Storage unavailable (private mode) — calibration simply won't persist.
-  }
 }
 
 /**
@@ -63,8 +36,15 @@ function saveStoredOffset(trackKey: string | null, value: number): void {
  * - Closes on Escape or outside click (player bar / seek / volume clicks are guarded).
  * - On expand, re-centers the active lyric line only after transition end
  *   (~420ms — all 380ms geometry fully settled), gated with pointer-events.
- * - Header calibration strip: ±0.5s pills + non-zero offset badge, per-track
- *   offsets persisted in localStorage for instant real-time re-alignment.
+ * - Footer calibration capsule: minimalist ±0.5s nudge strip with per-track
+ *   offsets persisted in SQLite (`lyric_offsets`) — shared with the Cinema
+ *   Stage through one store, so a nudge or ↺ reset applies everywhere at once.
+ * - Split-stage track skips: the island container is NEVER torn down or
+ *   collapsed on track change — `trackKey` drives a pre-paint opacity dip and
+ *   a smooth reveal (useTrackSwapFade) so the new title/lyrics cross-fade into
+ *   the already-open island. The scroll reset + line-0 re-center for the new
+ *   track live in LyricsPane's own track-change effects (same container, no
+ *   remount).
  */
 export function DynamicIslandLyrics({
   isExpanded: controlledExpanded,
@@ -86,24 +66,21 @@ export function DynamicIslandLyrics({
   const isPlaying = usePlayerStore((s) => s.isPlaying)
   const trackKey = currentTrack ? String(currentTrack.id ?? currentTrack.path ?? '') : null
 
-  // Fine-tune calibration: per-track manual offset (seconds) applied on top of
-  // LRC timestamps. Restored on track change, persisted on every nudge.
-  const [manualOffset, setManualOffset] = useState(0)
+  // Fine-tune calibration: per-track manual offset (ms) applied on top of LRC
+  // timestamps. The value lives in one shared SQLite-backed store used by both
+  // this island and the Cinema Stage, so a nudge or ↺ reset is live everywhere.
+  const { offsetMs, nudge, setOffsetMs } = useLyricOffset(trackKey)
+  const handleNudge = useCallback((deltaMs: number) => nudge(deltaMs), [nudge])
+  const handleReset = useCallback(() => setOffsetMs(0), [setOffsetMs])
 
-  useEffect(() => {
-    setManualOffset(loadStoredOffset(trackKey))
-  }, [trackKey])
-
-  const nudgeOffset = (delta: number) => {
-    setManualOffset((prev) => {
-      // Round to 0.1s to keep the badge crisp and avoid float drift.
-      const next = Math.max(
-        -OFFSET_CLAMP_SEC,
-        Math.min(OFFSET_CLAMP_SEC, Math.round((prev + delta) * 10) / 10)
-      )
-      saveStoredOffset(trackKey, next)
-      return next
-    })
+  // Track-swap cross-fade: flips to 0 BEFORE the new track paints (so the
+  // title/lyrics payload swap is never seen mid-flight) and eases back to 1 —
+  // all without collapsing, remounting or re-morphing the island container.
+  const swapFade = useTrackSwapFade(trackKey)
+  const swapStyle: React.CSSProperties = {
+    opacity: swapFade,
+    pointerEvents: swapFade === 1 ? undefined : 'none',
+    transition: swapFade === 1 ? 'opacity 240ms ease' : 'none'
   }
 
   // Handle Escape key and outside clicks when expanded
@@ -170,8 +147,8 @@ export function DynamicIslandLyrics({
           className={cn(
             'absolute inset-0 flex items-center justify-center gap-2 px-3 transition-all duration-150',
             isExpanded
-              ? 'opacity-0 pointer-events-none scale-90 blur-[2px]'
-              : 'opacity-100 pointer-events-auto scale-100 blur-0'
+              ? 'opacity-0 pointer-events-none scale-90'
+              : 'opacity-100 pointer-events-auto scale-100'
           )}
           role="button"
           tabIndex={isExpanded ? -1 : 0}
@@ -209,23 +186,24 @@ export function DynamicIslandLyrics({
           </span>
         </div>
 
-        {/* Layer 2: Expanded Canvas View (fades in with blur reveal).
-            Smooth continuous opacity curve: duration-300 delay-150 — no
-            abrupt compositor shock; the text settles in gently while/after
-            the 380ms morph docks. transition stays scoped to opacity/filter
-            so this layer never independently interpolates layout props
-            (inset follows parent only; blur still animates on collapse). */}
+        {/* Layer 2: Expanded Canvas View (fades in with opacity only — zero
+            blur/filter anywhere on the lyric canvas so WebView2 keeps native
+            subpixel glyph rasterization). Smooth continuous opacity curve:
+            duration-300 delay-150 — no abrupt compositor shock; the text
+            settles in gently while/after the 380ms morph docks. transition is
+            scoped to opacity so this layer never independently interpolates
+            layout props (inset follows parent only). */}
         <div
           className={cn(
-            'absolute inset-0 flex flex-col min-h-0 min-w-0 overflow-hidden transition-[opacity,filter] duration-300',
+            'absolute inset-0 flex flex-col min-h-0 min-w-0 overflow-hidden transition-opacity duration-300',
             isExpanded
-              ? 'opacity-100 pointer-events-auto filter-none delay-150'
-              : 'opacity-0 pointer-events-none filter blur-[4px]'
+              ? 'opacity-100 pointer-events-auto delay-150'
+              : 'opacity-0 pointer-events-none'
           )}
           aria-hidden={!isExpanded}
         >
           {/* Header Bar with Track Title, Offset Calibration Strip & Close Button */}
-          <div className="flex h-11 shrink-0 items-center justify-between border-b border-white/10 px-5 bg-white/[0.02]">
+          <div style={swapStyle} className="flex h-11 shrink-0 items-center justify-between border-b border-white/10 px-5 bg-white/[0.02]">
             <div className="flex items-center gap-2 min-w-0 pr-2">
               <MicVocal size={13} className="text-[#EAB308] shrink-0" aria-hidden="true" />
               <span className="text-[10px] font-bold tracking-[0.2em] text-slate-300 uppercase shrink-0">
@@ -239,47 +217,6 @@ export function DynamicIslandLyrics({
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
-              {/* Fine-tune calibration strip: ±0.5s instant timestamp shift */}
-              <div
-                role="group"
-                aria-label="Lyrics timing calibration"
-                className="flex items-center gap-1"
-              >
-                <button
-                  type="button"
-                  onClick={() => nudgeOffset(-0.5)}
-                  className="flex h-6 items-center rounded-full border border-white/10 bg-white/5 px-2 text-[10px] font-mono font-semibold text-slate-400 outline-none transition-colors hover:border-white/20 hover:bg-white/15 hover:text-white focus-visible:ring-1 focus-visible:ring-[#EAB308]"
-                  aria-label="Shift lyrics 0.5 seconds earlier"
-                  tabIndex={isExpanded ? 0 : -1}
-                >
-                  −0.5s
-                </button>
-
-                {manualOffset !== 0 && (
-                  <button
-                    type="button"
-                    onClick={() => nudgeOffset(-manualOffset)}
-                    title="Reset lyrics offset"
-                    className="flex h-6 items-center rounded-full border border-[#EAB308]/40 bg-[#EAB308]/10 px-2 text-[10px] font-mono font-bold text-[#EAB308] outline-none transition-colors hover:bg-[#EAB308]/20 focus-visible:ring-1 focus-visible:ring-[#EAB308]"
-                    aria-label={`Lyrics offset ${manualOffset > 0 ? 'plus' : 'minus'} ${Math.abs(manualOffset).toFixed(1)} seconds. Activate to reset.`}
-                    tabIndex={isExpanded ? 0 : -1}
-                  >
-                    {manualOffset > 0 ? '+' : ''}
-                    {manualOffset.toFixed(1)}s
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => nudgeOffset(0.5)}
-                  className="flex h-6 items-center rounded-full border border-white/10 bg-white/5 px-2 text-[10px] font-mono font-semibold text-slate-400 outline-none transition-colors hover:border-white/20 hover:bg-white/15 hover:text-white focus-visible:ring-1 focus-visible:ring-[#EAB308]"
-                  aria-label="Shift lyrics 0.5 seconds later"
-                  tabIndex={isExpanded ? 0 : -1}
-                >
-                  +0.5s
-                </button>
-              </div>
-
               <button
                 type="button"
                 onClick={() => setExpanded(false)}
@@ -293,9 +230,44 @@ export function DynamicIslandLyrics({
           </div>
 
           {/* Body: High-End Spotify-Style Lyrics Engine */}
-          <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
-            <LyricsPane active={isExpanded} manualOffset={manualOffset} />
+          <div style={swapStyle} className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
+            <LyricsPane active={isExpanded} manualOffset={offsetMs / 1000} />
           </div>
+
+          {/* Studio calibration footer: per-track SQLite timing nudge capsule.
+              Shared with Cinema Stage — same rows, same semantics. */}
+          {trackKey && (
+            <div style={swapStyle} className="shrink-0 px-3 pb-3 pt-1">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] font-mono select-none">
+                <button
+                  onClick={() => handleNudge(-500)}
+                  className="px-1.5 py-0.5 rounded hover:bg-white/10 text-white/60 hover:text-white transition-colors"
+                  title="Lyrics earlier (-0.5s)"
+                >
+                  -0.5s
+                </button>
+                <span className={offsetMs !== 0 ? "text-amber-400 font-bold min-w-[42px] text-center" : "text-white/40 min-w-[42px] text-center"}>
+                  {offsetMs === 0 ? "0.0s" : `${offsetMs > 0 ? "+" : ""}${(offsetMs / 1000).toFixed(1)}s`}
+                </span>
+                <button
+                  onClick={() => handleNudge(500)}
+                  className="px-1.5 py-0.5 rounded hover:bg-white/10 text-white/60 hover:text-white transition-colors"
+                  title="Lyrics later (+0.5s)"
+                >
+                  +0.5s
+                </button>
+                {offsetMs !== 0 && (
+                  <button
+                    onClick={handleReset}
+                    className="text-[11px] text-white/40 hover:text-white ml-0.5 px-1 py-0.5 rounded hover:bg-white/10 transition-colors"
+                    title="Reset offset (0.0s)"
+                  >
+                    ↺
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
     </div>
   )

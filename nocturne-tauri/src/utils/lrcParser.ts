@@ -8,6 +8,12 @@ export interface LyricLine {
   time: number;
   text: string;
   words?: LyricWord[];
+  /**
+   * LRC header [offset:±ms] carried WITH the line — deliberately NOT baked
+   * into `time`. The sync engine applies it once:
+   * effectiveTime = currentTime + (tagOffsetMs + userTrimMs) / 1000.
+   */
+  tagOffsetMs?: number;
 }
 
 interface ParsedLrcItem {
@@ -20,14 +26,14 @@ const TIMESTAMP_REGEX = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
 const WORD_TIMESTAMP_REGEX = /<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>/g;
 const OFFSET_REGEX = /\[offset:([+-]?\d+)\]/i;
 
-function timestampToSeconds(match: RegExpExecArray, offsetSec: number): number {
+function timestampToSeconds(match: RegExpExecArray): number {
   const minutes = parseInt(match[1], 10);
   const seconds = parseInt(match[2], 10);
   const fraction = match[3] ? parseFloat(`0.${match[3]}`) : 0;
-  return Math.max(0, minutes * 60 + seconds + fraction - offsetSec);
+  return Math.max(0, minutes * 60 + seconds + fraction);
 }
 
-function parseWordTimings(content: string, offsetSec: number): LyricWord[] | undefined {
+function parseWordTimings(content: string): LyricWord[] | undefined {
   const matches = Array.from(content.matchAll(WORD_TIMESTAMP_REGEX));
   if (matches.length === 0) return undefined;
 
@@ -39,7 +45,7 @@ function parseWordTimings(content: string, offsetSec: number): LyricWord[] | und
     const end = nextMatch?.index ?? content.length;
     const text = content.slice(start, end);
     if (!text) continue;
-    words.push({ text, time: timestampToSeconds(match, offsetSec) });
+    words.push({ text, time: timestampToSeconds(match) });
   }
 
   return words.length > 0 ? words : undefined;
@@ -49,17 +55,27 @@ function parseWordTimings(content: string, offsetSec: number): LyricWord[] | und
  * Parses raw LRC string content into sorted, timestamped LyricLine objects.
  * Supports [mm:ss.xx], [mm:ss:xx], and [mm:ss] timestamp formats.
  * Handles multiple timestamps per line and ignores non-timestamp metadata tags.
- * Honors the standard [offset:±ms] header: every line timestamp is shifted by
- * -offset milliseconds so the lyric engine locks to the audio master.
+ *
+ * Patch 137: the standard [offset:±ms] header is NOT baked into line times —
+ * it is carried per line as `tagOffsetMs` so the sync engine (LyricsPane /
+ * CinemaStage) applies it exactly once together with the user calibration:
+ * effectiveTime = currentTime + (tagOffsetMs + userTrimMs) / 1000.
+ * `tagOffsetMs` may be passed explicitly (online fetch parses it in
+ * lyricsService); otherwise it is derived from the header itself.
  */
-export function parseLrc(lrcText: string): LyricLine[] {
+export function parseLrc(lrcText: string, tagOffsetMs?: number): LyricLine[] {
   if (!lrcText || typeof lrcText !== 'string') {
     return [];
   }
 
   // Standard LRC header: overall timestamp adjustment in milliseconds.
   const offsetMatch = lrcText.match(OFFSET_REGEX);
-  const offsetSec = offsetMatch ? parseInt(offsetMatch[1], 10) / 1000 : 0;
+  const resolvedTagMs =
+    typeof tagOffsetMs === 'number' && Number.isFinite(tagOffsetMs)
+      ? Math.trunc(tagOffsetMs)
+      : offsetMatch
+        ? parseInt(offsetMatch[1], 10)
+        : 0;
 
   const lines = lrcText.split(/\r?\n/);
   const parsedItems: ParsedLrcItem[] = [];
@@ -80,10 +96,10 @@ export function parseLrc(lrcText: string): LyricLine[] {
     if (!text) {
       continue;
     }
-    const words = parseWordTimings(content, offsetSec);
+    const words = parseWordTimings(content);
 
     for (const match of timestampMatches) {
-      parsedItems.push({ time: timestampToSeconds(match, offsetSec), text, words });
+      parsedItems.push({ time: timestampToSeconds(match), text, words });
     }
   }
 
@@ -95,5 +111,6 @@ export function parseLrc(lrcText: string): LyricLine[] {
     time: item.time,
     text: item.text,
     words: item.words,
+    tagOffsetMs: resolvedTagMs,
   }));
 }

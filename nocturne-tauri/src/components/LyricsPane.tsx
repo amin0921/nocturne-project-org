@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { MicVocal } from 'lucide-react'
-import { usePlayerStore, seekTo } from '../stores/usePlayerStore'
+import { usePlayerStore, seekTo, resolvePlaybackDuration } from '../stores/usePlayerStore'
 import { parseLrc, type LyricLine, type LyricWord } from '../utils/lrcParser'
 import { fetchLyricsOnline } from '../services/lyricsService'
 import { cn } from '../lib/utils'
@@ -21,28 +21,25 @@ export interface LyricsPaneProps {
 interface LyricLineRowProps {
   line: LyricLine
   isActive: boolean
-  distance: number
   onSeek: (time: number) => void
 }
 
 const LyricLineRow = React.memo(function LyricLineRow({
   line,
   isActive,
-  distance,
   onSeek
 }: LyricLineRowProps): JSX.Element {
   return (
     <button
       type="button"
       onClick={() => onSeek(line.time)}
+      style={isActive ? { textShadow: '0 0 20px rgba(245,158,11,0.35)' } : undefined}
       className={cn(
-        'group w-full cursor-pointer py-1.5 px-3 rounded-xl text-left outline-none focus-visible:ring-1 focus-visible:ring-[#EAB308]',
-        'lyric-line-motion space-y-3 py-1.5 leading-snug origin-left',
+        'group w-full cursor-pointer py-2.5 px-3 rounded-xl text-left outline-none focus-visible:ring-1 focus-visible:ring-[#EAB308]',
+        'lyric-line-motion space-y-3 leading-snug origin-left',
         isActive
-          ? 'lyric-line-active-solid text-[#f59e0b] text-xl md:text-2xl font-black scale-[1.02]'
-          : distance === 1
-          ? 'lyric-line-neighbor text-white/50 text-base md:text-lg font-bold scale-100 hover:text-white/80'
-          : 'lyric-line-distant text-white/28 text-base md:text-lg font-medium scale-100 hover:text-white/60'
+          ? 'text-[#f59e0b] text-xl md:text-2xl font-black scale-[1.03] origin-left select-none'
+          : 'text-slate-400/40 text-base md:text-lg font-bold scale-100 hover:text-white/80 transition-colors duration-200 select-none'
       )}
       aria-current={isActive ? 'true' : undefined}
     >
@@ -53,11 +50,6 @@ const LyricLineRow = React.memo(function LyricLineRow({
   )
 }, (previous, next) => {
   if (previous.isActive !== next.isActive) return false
-  if (previous.distance !== next.distance) {
-    if (!(previous.distance >= 2 && next.distance >= 2)) {
-      return false
-    }
-  }
   if (previous.line.text !== next.line.text) return false
   if (previous.line.time !== next.line.time) return false
   return previous.onSeek === next.onSeek
@@ -72,15 +64,21 @@ const LyricLineRow = React.memo(function LyricLineRow({
  * - 3rd: Background caching of fetched lyrics to sibling .lrc via 'save_cached_lyrics'
  * - Real-time synchronization to usePlayerStore.currentTime
  * - Optical Center Lock: Active lyric line is continuously centered vertically (scrollIntoView block: "center")
- * - Floating Viewport Spacer Padding: 36vh top/bottom padding gives lines 0 to end full centering travel
+ * - Floating Viewport Spacer Padding: 34vh top/bottom padding gives lines 0 to end full centering travel
  * - Cinematic Vignette Fade Mask (.lyrics-vignette-mask): GPU mask fades top/bottom into obsidian void
- * - Visual Depth Hierarchy:
- *     * Active: Studio Amber (#f59e0b), font-black (900), scale-[1.02], amber drop shadow
- *     * Immediate neighbors (distance 1): text-white/50, font-bold
- *     * Distant (distance >= 2): text-white/28, font-medium
+ * - Visual Depth Hierarchy (crystal vector rendering — ZERO blur/filters on text):
+ *     * Active: Studio Amber #f59e0b, font-black (900), scale-[1.03],
+ *       warm ambient glow via text-shadow: 0 0 20px rgba(245,158,11,0.35)
+ *       (never a `filter:` — see index.css .lyric-line-motion) — identical
+ *       signature amber to Cinema Stage (.lyric-line[data-active="true"])
+ *     * Inactive: text-slate-400/40, font-bold — depth via opacity only
  * - Manual scroll throttle: 2.5s pause on wheel/touch/scroll so user interaction isn't fought
  * - Click-to-seek playback navigation
  * - Track change: instant scroll reset to top, then center the new opening line
+ * - Track swap: lyric commits ride React 18 startTransition (the previous
+ *   track's lines stay rendered while the new payload is computed) + a 250ms
+ *   compositor-only row cross-fade — zero offsetHeight/getBoundingClientRect
+ *   reads during the swap.
  * - Expand (active prop): 420ms settle delay avoids layout thrashing mid-island morph
  * - Preserves Vazirmatn variable font for Persian lyrics and Inter for Latin lyrics with dir="auto"
  */
@@ -107,11 +105,11 @@ export function LyricsPane({
     if (propsLyrics !== undefined) {
       if (typeof propsLyrics === 'string') {
         const parsed = parseLrc(propsLyrics)
-        setFetchedLyrics(parsed)
         usePlayerStore.getState().setCurrentLyrics(parsed)
+        React.startTransition(() => setFetchedLyrics(parsed))
       } else if (Array.isArray(propsLyrics)) {
-        setFetchedLyrics(propsLyrics)
         usePlayerStore.getState().setCurrentLyrics(propsLyrics)
+        React.startTransition(() => setFetchedLyrics(propsLyrics))
       }
       return
     }
@@ -133,7 +131,7 @@ export function LyricsPane({
     const trackPath = typeof rawPath === 'string' ? rawPath.trim() : ''
 
     if (!trackPath || !currentTrack) {
-      setFetchedLyrics([])
+      React.startTransition(() => setFetchedLyrics([]))
       return
     }
 
@@ -148,8 +146,10 @@ export function LyricsPane({
         if (localLrc && localLrc.trim().length > 0) {
           const parsed = parseLrc(localLrc)
           if (parsed.length > 0) {
-            setFetchedLyrics(parsed)
             usePlayerStore.getState().setCurrentLyrics(parsed)
+            // Transition-gated commit: the previous track's lines stay
+            // rendered/visible while React computes the new payload.
+            React.startTransition(() => setFetchedLyrics(parsed))
             setIsSearching(false)
             return
           }
@@ -157,24 +157,29 @@ export function LyricsPane({
 
         // Step 2: Fallback to online LRCLIB API
         if (currentTrack.title) {
-          // Strict edition matching: prefer the scanner's duration, else the
-          // live audio-element duration once metadata has loaded.
-          const liveDuration = usePlayerStore.getState().duration
-          const onlineLrc = await fetchLyricsOnline(
+          // Mandatory duration match: derive the track duration (scanner
+          // metadata → live audio metadata, bounded wait) before querying, so
+          // /api/search can never accept an edition whose timing runs away
+          // (e.g. a radio edit with a 10s-shorter intro).
+          const targetDuration = await resolvePlaybackDuration()
+          if (isCancelled) return
+          const online = await fetchLyricsOnline(
             currentTrack.title,
             currentTrack.artist || '',
-            currentTrack.duration_secs ?? liveDuration ?? undefined
+            targetDuration
           )
 
           if (isCancelled) return
 
-          if (onlineLrc && onlineLrc.trim().length > 0) {
-            const parsed = parseLrc(onlineLrc)
-            setFetchedLyrics(parsed)
+          if (online && online.lrc.trim().length > 0) {
+            // tagOffsetMs = LRC [offset:±ms] header, parsed in lyricsService;
+            // parseLrc carries it per line so the sync engine applies it once.
+            const parsed = parseLrc(online.lrc, online.tagOffsetMs)
             usePlayerStore.getState().setCurrentLyrics(parsed)
+            React.startTransition(() => setFetchedLyrics(parsed))
 
             // Step 3: Background cache to sibling .lrc file for future offline use
-            invoke('save_cached_lyrics', { filePath: trackPath, content: onlineLrc })
+            invoke('save_cached_lyrics', { filePath: trackPath, content: online.lrc })
               .catch((err) => {
                 console.warn('Could not cache downloaded lyrics to disk:', err)
               })
@@ -185,13 +190,13 @@ export function LyricsPane({
         }
 
         // If neither local nor online yielded lyrics
-        setFetchedLyrics([])
+        React.startTransition(() => setFetchedLyrics([]))
         setIsSearching(false)
       })
       .catch((err) => {
         console.warn('Failed to resolve lyrics for track:', trackPath, err)
         if (!isCancelled) {
-          setFetchedLyrics([])
+          React.startTransition(() => setFetchedLyrics([]))
           setIsSearching(false)
         }
       })
@@ -214,13 +219,20 @@ export function LyricsPane({
   }, [propsLyrics, fetchedLyrics, currentLyrics])
 
   // Determine current active lyric line based on playback currentTime.
-  // manualOffset (user fine-tune) is added to each line's timestamp so a nudge
-  // takes effect instantly without re-parsing the LRC.
+  // Sync engine (Patch 137): effectiveTime = currentTime + (tagOffsetMs + userTrimMs) / 1000
+  // — a line is active when line.time <= effectiveTime.
+  //   * tagOffsetMs: LRC header [offset:±ms] carried per line (applied exactly once).
+  //   * userTrimMs: per-track SQLite calibration, entered negated because the
+  //     ±0.5s capsule stores positive = "lyrics later" (persistence unchanged).
+  // Applying the offset to the CLOCK (not the timestamps) means a nudge takes
+  // effect instantly without re-parsing the LRC.
   const activeIndex = useMemo(() => {
     if (parsedLines.length === 0) return -1
+    const tagOffsetMs = parsedLines[0]?.tagOffsetMs ?? 0
+    const effectiveTime = currentTime + (tagOffsetMs - manualOffset * 1000) / 1000
     let idx = -1
     for (let i = 0; i < parsedLines.length; i++) {
-      if (parsedLines[i].time + manualOffset <= currentTime) {
+      if (parsedLines[i].time <= effectiveTime) {
         idx = i
       } else {
         break
@@ -257,7 +269,16 @@ export function LyricsPane({
 
   const centerActiveLine = useCallback((behavior?: ScrollBehavior) => {
     if (!dockedRef.current) return
-    const el = scrollContainerRef.current?.querySelector('button[aria-current="true"]') as HTMLButtonElement | null
+    const container = scrollContainerRef.current
+    if (!container) return
+    // Active line when one exists; otherwise the OPENING line (line 0).
+    // During a track's intro no line carries aria-current="true" yet, and
+    // without this fallback line 0 stays pinned wherever the scroll reset
+    // left it (bottom of the viewport) instead of floating in the vertical
+    // optical center of the stage box.
+    const el =
+      (container.querySelector('button[aria-current="true"]') as HTMLButtonElement | null) ??
+      (container.querySelector('button') as HTMLButtonElement | null)
     if (!el) return
     beginProgrammaticScroll()
     const prefersReduced =
@@ -268,10 +289,14 @@ export function LyricsPane({
     el.scrollIntoView({ behavior: resolvedBehavior, block: 'center' })
   }, [beginProgrammaticScroll])
 
-  // Track change: instantly reset container scroll to the top of the new track
-  // and release any stale manual-scroll lock.
+  // Track change: instantly reset container scroll to the top of the new track,
+  // drop the previous track's stale lines (so the swap never shows the old
+  // song's lyrics) and release any stale manual-scroll lock. Re-centering of
+  // line 0 then happens through the parsedLines effect below, which always
+  // fires on the cleared/swapped payload.
   useEffect(() => {
     unlockAutoScroll()
+    React.startTransition(() => setFetchedLyrics([]))
     if (scrollContainerRef.current) {
       beginProgrammaticScroll()
       scrollContainerRef.current.scrollTop = 0
@@ -362,17 +387,20 @@ export function LyricsPane({
     handleManualScrollActivity()
   }, [handleManualScrollActivity])
 
-  // Handle click-to-seek navigation (seek to the calibrated line time)
+  // Handle click-to-seek navigation (seek to the calibrated line time).
+  // Line times are RAW — undo the [offset:±ms] header exactly like the sync
+  // engine's effectiveTime does, then apply the user calibration.
   const handleSeek = useCallback((time: number) => {
     unlockAutoScroll()
-    const target = Math.max(0, time + manualOffset)
+    const tagOffsetMs = parsedLines[0]?.tagOffsetMs ?? 0
+    const target = Math.max(0, time - tagOffsetMs / 1000 + manualOffset)
     const storeState = usePlayerStore.getState() as any
     if (typeof storeState.seek === 'function') {
       storeState.seek(target)
     } else {
       seekTo(target)
     }
-  }, [manualOffset, unlockAutoScroll])
+  }, [manualOffset, unlockAutoScroll, parsedLines])
 
   // Clear timers on unmount
   useEffect(() => {
@@ -433,8 +461,8 @@ export function LyricsPane({
       onWheel={handleWheel}
       onTouchMove={handleTouchMove}
       style={{
-        paddingTop: '36vh',
-        paddingBottom: '36vh'
+        paddingTop: '34vh',
+        paddingBottom: '34vh'
       }}
       className={cn(
         'lyrics-vignette-mask flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto space-y-3 px-6 text-left select-none',
@@ -444,18 +472,14 @@ export function LyricsPane({
       role="region"
       aria-label="Synchronized lyrics"
     >
-      {parsedLines.map((line, idx) => {
-        const distance = activeIndex >= 0 ? Math.abs(idx - activeIndex) : 999
-        return (
-          <LyricLineRow
-            key={`${line.time}-${line.id ?? idx}`}
-            line={line}
-            isActive={idx === activeIndex}
-            distance={distance}
-            onSeek={handleSeek}
-          />
-        )
-      })}
+      {parsedLines.map((line, idx) => (
+        <LyricLineRow
+          key={`${line.time}-${line.id ?? idx}`}
+          line={line}
+          isActive={idx === activeIndex}
+          onSeek={handleSeek}
+        />
+      ))}
     </div>
   )
 }

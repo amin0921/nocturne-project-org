@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS plays (
 );
 CREATE INDEX IF NOT EXISTS idx_plays_time ON plays(played_at);
 CREATE INDEX IF NOT EXISTS idx_plays_track ON plays(track_id);
+CREATE TABLE IF NOT EXISTS lyric_offsets (
+  track_id   TEXT PRIMARY KEY,
+  offset_ms  INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
 ";
 
 pub fn now_ms() -> i64 {

@@ -773,46 +773,58 @@ body::-webkit-scrollbar,
   height: 0 !important;
 }
 
-/* Spotify-style kinetic lyric line transitions */
+/* Spotify-style kinetic lyric line transitions.
+   Never list `filter` or `will-change: filter` on lyric rows: a compositor
+   filter hint makes WebView2 rasterize glyphs onto an un-antialiased bitmap
+   layer and destroys crisp subpixel vector text. */
 .lyric-line-motion {
   transition: transform 300ms cubic-bezier(0.16, 1, 0.3, 1),
               font-size 300ms cubic-bezier(0.16, 1, 0.3, 1),
               color 250ms ease,
               opacity 250ms ease,
-              filter 250ms ease;
-  will-change: transform, opacity, filter;
+              text-shadow 250ms ease;
+  will-change: transform, opacity;
 }
 
-/* Studio Amber Glow — solid line-level activation */
-.lyric-line-active-solid {
-  color: #f59e0b !important;
-  font-weight: 900 !important;
-  filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.45));
+/* ====================================================================
+ * Patch 138 — Lyric rows: zero containment so the Studio Amber glow
+ * radiates without a rectangular clipping wall.
+ * Root cause of the artifact (screens image_27ca65/67): `content-visibility:
+ * auto` implicitly applies `contain: paint`, which forbids the active
+ * row's warm text-shadow from rendering past the row's padding box —
+ * slicing the halo into a hard 90° rectangle. A track has only 50-100
+ * lightweight rows, so the virtualization bought nothing and cost the
+ * glow its organic diffusion. Patch 137's startTransition commits and
+ * 250ms cross-fade below are retained — only the paint box is removed.
+ * ==================================================================== */
+
+.lyric-line,
+.lyric-line-motion,
+.lyric-line[data-active='true'],
+.lyric-line-motion[aria-current='true'] {
+  contain: none !important;
+  overflow: visible !important;
 }
 
-.lyric-line-neighbor {
-  color: rgba(255, 255, 255, 0.5) !important;
-  font-weight: 700;
-  filter: none;
+@keyframes lyric-line-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
-.lyric-line-distant {
-  color: rgba(255, 255, 255, 0.28) !important;
-  font-weight: 500;
-  filter: none;
-}
-
-.lyric-line-inactive {
-  color: rgba(255, 255, 255, 0.28) !important;
-  font-weight: 500;
-  filter: none;
+/* Runs once per row mount — i.e. exactly on the track-swap line commit. */
+.lyric-line-motion {
+  animation: lyric-line-in 250ms ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .lyric-line-motion {
     transition: none !important;
     transform: none !important;
-    filter: none !important;
+    animation: none !important;
   }
 }
 

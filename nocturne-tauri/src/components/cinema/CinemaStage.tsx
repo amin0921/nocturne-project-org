@@ -29,6 +29,7 @@ import { audioController } from '../../services/audio-controller'
 import { resolveCoverUrl } from '../../utils/cover-url'
 import { formatTime } from '../../lib/utils'
 import { WindowGripPill } from '../WindowGripPill'
+import { useLyricOffset } from '../../stores/useLyricOffset'
 import { useFullscreen } from './useFullscreen'
 import { useIdle } from './useIdle'
 import { flipEnter } from './flipEnter'
@@ -65,8 +66,15 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
   const [imgError, setImgError] = useState(false)
   const coverSrc = !imgError && currentTrack?.coverUrl ? resolveCoverUrl(currentTrack.coverUrl) : undefined
 
-  // Manual lyric timing calibration in seconds (top-bar ±0.5s nudge)
-  const [offset, setOffset] = useState(0)
+  // Per-track lyric timing calibration (ms), restored from SQLite on every
+  // track change. Lyrics-clock only: effectiveTime = clockTime - offsetMs/1000
+  // — audio.currentTime is never written, so a nudge cannot hitch audio.
+  // One shared store feeds this stage, the Dynamic Island and LyricsPane, so
+  // a ±0.5s nudge or ↺ reset written here is reflected everywhere at once.
+  const trackKey = currentTrack ? String(currentTrack.id) : ''
+  const { offsetMs, nudge, setOffsetMs } = useLyricOffset(trackKey)
+  const handleNudge = useCallback((deltaMs: number) => nudge(deltaMs), [nudge])
+  const handleReset = useCallback(() => setOffsetMs(0), [setOffsetMs])
 
   // Continuous 60fps clock — native timeupdate only fires ~4Hz and lets fast phrases slip
   const [clockTime, setClockTime] = useState(currentTime)
@@ -133,32 +141,39 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
     }
   }, [])
 
-  // Sanitize every line: coerce timestamps to numeric seconds, drop empty text, sort ascending
+  // Sanitize every line: coerce timestamps to numeric seconds, drop empty text, sort ascending.
+  // tagOffsetMs (LRC [offset:±ms] header) rides along — line times stay RAW and
+  // the header is applied once inside the sync engine below.
   const parsedLyrics = useMemo(() => {
     if (!currentLyrics || currentLyrics.length === 0) return []
     return currentLyrics
       .map((l, i) => ({
         id: i,
         time: typeof l.time === 'number' ? l.time : parseFloat(String(l.time)) || 0,
-        text: l.text?.trim() || ''
+        text: l.text?.trim() || '',
+        tagOffsetMs: typeof l.tagOffsetMs === 'number' && Number.isFinite(l.tagOffsetMs) ? l.tagOffsetMs : 0
       }))
       .filter((l) => l.text.length > 0)
       .sort((a, b) => a.time - b.time)
   }, [currentLyrics])
 
-  // Match active index against the 60fps clock with offset nudge and 120ms lead-in
+  // Match active index against the 60fps clock with offset nudge and 120ms lead-in.
+  // Sync engine (Patch 137): effectiveTime = clockTime + (tagOffsetMs + userTrimMs) / 1000.
+  // userTrimMs enters negated: the shared ±0.5s capsule stores positive = "lyrics later".
   const activeIdx = useMemo(() => {
     if (parsedLyrics.length === 0) return -1
-    const effectiveTime = clockTime - offset
+    const tagOffsetMs = parsedLyrics[0]?.tagOffsetMs ?? 0
+    const effectiveTime = clockTime + (tagOffsetMs - offsetMs) / 1000
     const firstLineTime = parsedLyrics[0].time
     // Early/erroneous 00:00-00:01 stamps: hold line 1 back while the intro plays.
-    // Only applies to uncalibrated playback — a manual offset nudge opts out.
-    const holdIntro = firstLineTime <= 1.0 && clockTime < 2.0 && offset === 0
+    // Only applies to uncalibrated playback — a manual offset nudge or an
+    // explicit [offset:±ms] header (intentional timing) opts out.
+    const holdIntro = firstLineTime <= 1.0 && clockTime < 2.0 && offsetMs === 0 && tagOffsetMs === 0
     const threshold = holdIntro ? Math.max(0.8, firstLineTime) : firstLineTime
     if (effectiveTime < threshold) return -1
     const idx = parsedLyrics.findLastIndex((line) => line.time <= effectiveTime + 0.12)
     return idx
-  }, [parsedLyrics, clockTime, offset])
+  }, [parsedLyrics, clockTime, offsetMs])
 
   // Smooth container scroll without animation collisions (replaces scrollIntoView)
   useEffect(() => {
@@ -290,41 +305,43 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
               <span>Back to Player</span>
               <span className="text-[10px] text-white/30 font-mono ml-1">Esc</span>
             </button>
-            <span className="font-mono text-xs tracking-widest text-white/40 hidden lg:inline">
+            <span className="font-mono text-xs tracking-widest text-white/40 hidden xl:inline">
               CINEMA STAGE
             </span>
           </div>
 
         <div className="flex items-center gap-3">
           <WindowGripPill label="Nocturne Cinema" className="hidden md:flex" />
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] font-mono select-none pointer-events-auto">
-            <button
-              onClick={() => setOffset((prev) => Math.round((prev - 0.5) * 10) / 10)}
-              className="px-1.5 py-0.5 rounded hover:bg-white/10 text-white/60 hover:text-white transition-colors"
-              title="Lyrics earlier (-0.5s)"
-            >
-              -0.5s
-            </button>
-            <span className={offset !== 0 ? 'text-amber-400 font-bold' : 'text-white/40'}>
-              {offset === 0 ? '0.0s' : `${offset > 0 ? '+' : ''}${offset.toFixed(1)}s`}
-            </span>
-            <button
-              onClick={() => setOffset((prev) => Math.round((prev + 0.5) * 10) / 10)}
-              className="px-1.5 py-0.5 rounded hover:bg-white/10 text-white/60 hover:text-white transition-colors"
-              title="Lyrics later (+0.5s)"
-            >
-              +0.5s
-            </button>
-            {offset !== 0 && (
+          {trackKey && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] font-mono select-none">
               <button
-                onClick={() => setOffset(0)}
-                className="text-[10px] text-white/40 hover:text-white ml-1"
-                title="Reset offset"
+                onClick={() => handleNudge(-500)}
+                className="px-1.5 py-0.5 rounded hover:bg-white/10 text-white/60 hover:text-white transition-colors"
+                title="Lyrics earlier (-0.5s)"
               >
-                ↺
+                -0.5s
               </button>
-            )}
-          </div>
+              <span className={offsetMs !== 0 ? "text-amber-400 font-bold min-w-[42px] text-center" : "text-white/40 min-w-[42px] text-center"}>
+                {offsetMs === 0 ? "0.0s" : `${offsetMs > 0 ? "+" : ""}${(offsetMs / 1000).toFixed(1)}s`}
+              </span>
+              <button
+                onClick={() => handleNudge(500)}
+                className="px-1.5 py-0.5 rounded hover:bg-white/10 text-white/60 hover:text-white transition-colors"
+                title="Lyrics later (+0.5s)"
+              >
+                +0.5s
+              </button>
+              {offsetMs !== 0 && (
+                <button
+                  onClick={handleReset}
+                  className="text-[11px] text-white/40 hover:text-white ml-0.5 px-1 py-0.5 rounded hover:bg-white/10 transition-colors"
+                  title="Reset offset (0.0s)"
+                >
+                  ↺
+                </button>
+              )}
+            </div>
+          )}
           <button
             onClick={() => void handleDeleteLyrics()}
             title="Delete / Unlink wrong lyrics"
@@ -450,7 +467,7 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
                     data-line-index={idx}
                     data-active={isActive}
                     dir="auto"
-                    onClick={() => seekTo(line.time)}
+                    onClick={() => seekTo(Math.max(0, line.time - (line.tagOffsetMs ?? 0) / 1000))}
                     className="lyric-line"
                   >
                     {line.text}

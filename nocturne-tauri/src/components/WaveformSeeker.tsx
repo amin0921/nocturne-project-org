@@ -88,15 +88,20 @@ export function WaveformSeeker({
   const previewRatio = hoverRatio ?? (scrubbing ? progress : null)
   const previewTime = previewRatio !== null ? previewRatio * duration : 0
 
+  // Line times are RAW (Patch 137): fold the LRC [offset:±ms] header back into
+  // the preview clock so the scrub capsule quotes the same line the engine shows.
+  const tagOffsetSec =
+    (activeLyrics.length > 0 ? (activeLyrics[0] as LyricLine).tagOffsetMs ?? 0 : 0) / 1000
+
   const activePreviewLine = useMemo(() => {
     if (previewRatio === null || activeLyrics.length === 0) return undefined
-    return findActivePreviewLine(activeLyrics, previewTime)
-  }, [activeLyrics, previewRatio, previewTime])
+    return findActivePreviewLine(activeLyrics, previewTime + tagOffsetSec)
+  }, [activeLyrics, previewRatio, previewTime, tagOffsetSec])
 
   const lyricSnippet = useMemo(() => {
     if (previewRatio === null) return null
     if (activePreviewLine && activePreviewLine.text && activePreviewLine.text.trim().length > 0) {
-      if (previewTime - activePreviewLine.time < 12) {
+      if (previewTime + tagOffsetSec - activePreviewLine.time < 12) {
         return activePreviewLine.text.trim()
       }
       return '♪'
@@ -105,7 +110,7 @@ export function WaveformSeeker({
       return '♪'
     }
     return null
-  }, [previewRatio, activePreviewLine, previewTime, activeLyrics.length])
+  }, [previewRatio, activePreviewLine, previewTime, tagOffsetSec, activeLyrics.length])
 
   // Boundary Clamping: clamp horizontal left percentage so the floating capsule
   // stays comfortably within screen boundaries without clipping at track start or end.

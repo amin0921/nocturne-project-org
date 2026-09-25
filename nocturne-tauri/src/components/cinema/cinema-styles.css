@@ -145,7 +145,9 @@
   font-size: clamp(2rem, 3.2vw, 2.5rem);
   font-weight: 900;
   line-height: 1.333;
-  padding: 0.85rem 0;
+  /* Patch 138: vertical already >= py-2.5; px-3 keeps the 32px amber halo
+     inside .stage-lyrics' 2rem scroll-mask padding (never hard-clipped). */
+  padding: 0.85rem 0.75rem;
   color: #F2F3F5;
   opacity: 0.3;
   transform: scale(0.95);
@@ -155,6 +157,8 @@
               color 0.35s ease,
               text-shadow 0.35s ease;
   cursor: pointer;
+  contain: none;
+  overflow: visible;
 }
 
 [dir="rtl"] .lyric-line,
@@ -170,6 +174,7 @@
   opacity: 1;
   transform: scale(1);
   color: #f59e0b; /* Studio Amber */
+  overflow: visible;
   text-shadow: 0 0 32px rgba(245, 158, 11, 0.35);
 }
 
