@@ -49,8 +49,16 @@ export function useStudioHotkeys(): void {
       return false
     }
 
+    const isCinemaStageActive = (): boolean => {
+      return (
+        useUIStore.getState().cinemaOpen ||
+        Boolean(document.querySelector('.cinema-stage, .stage[aria-label="Cinema Stage"]'))
+      )
+    }
+
     const handleKeyDown = (e: KeyboardEvent): void => {
       if (isTyping() || isModifierChord(e)) return
+      if (isCinemaStageActive()) return
       if (document.activeElement?.closest('[role="listbox"], [data-coverflow], .coverflow-container')) return
       if (isCoverFlowActive(e)) return
 

@@ -15,6 +15,7 @@ import {
   Keyboard,
   Layers,
   Library,
+  Maximize2,
   Mic2,
   Play,
   Repeat,
@@ -57,7 +58,8 @@ const ICON_MAP: Record<string, LucideIcon> = {
   Mic2,
   Layers,
   AppWindow,
-  Keyboard
+  Keyboard,
+  Maximize2
 }
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({

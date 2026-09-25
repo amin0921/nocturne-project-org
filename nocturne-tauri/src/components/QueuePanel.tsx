@@ -68,6 +68,10 @@ interface DragState {
   currentIndex: number
   startY: number
   currentY: number
+  /** scrollTop of the queue container when the drag began (auto-scroll compensation). */
+  startScrollTop: number
+  /** Live scrollTop delta since drag start — keeps the ghost pinned under the cursor. */
+  scrollDelta: number
 }
 
 /**
@@ -99,6 +103,90 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
   const [settling, setSettling] = useState<{ id: string; fromY: number; active: boolean } | null>(null)
   const [ghostSnapshot, setGhostSnapshot] = useState<QueueSnapshot | null>(null)
   const [now, setNow] = useState(() => Date.now())
+
+  // ----- Edge proximity auto-scroll (pointer-capture drags never trigger native scroll) -----
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const autoScrollRaf = useRef<number | null>(null)
+  const autoScrollMotionRef = useRef<{ direction: -1 | 1; speed: number } | null>(null)
+
+  const stopAutoScroll = (): void => {
+    autoScrollMotionRef.current = null
+    if (autoScrollRaf.current !== null) {
+      cancelAnimationFrame(autoScrollRaf.current)
+      autoScrollRaf.current = null
+    }
+  }
+
+  /** Recompute the drop target + scroll compensation from a live pointer position. */
+  const updateDragTarget = (id: string, pointerY: number): void => {
+    const state = dragStateRef.current
+    if (!state || state.id !== id) return
+    const list = flipContainerRef.current
+    if (!list) return
+
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('[data-track-id]'))
+    let targetIndex = state.startIndex
+
+    for (let idx = 0; idx < rows.length; idx++) {
+      if (idx === state.startIndex) continue
+      const rect = rows[idx].getBoundingClientRect()
+      const midY = rect.top + rect.height / 2
+
+      if (idx < state.startIndex) {
+        if (pointerY < midY) {
+          targetIndex = idx
+          break
+        }
+      } else {
+        if (pointerY < midY) {
+          targetIndex = idx - 1
+          break
+        }
+        targetIndex = idx
+      }
+    }
+
+    const container = scrollContainerRef.current
+    const scrollDelta = container ? container.scrollTop - state.startScrollTop : 0
+    const next: DragState = { ...state, currentY: pointerY, currentIndex: targetIndex, scrollDelta }
+    dragStateRef.current = next
+    setDragState(next)
+  }
+
+  const startAutoScroll = (direction: -1 | 1, speed: number): void => {
+    autoScrollMotionRef.current = { direction, speed }
+    if (autoScrollRaf.current !== null) return
+    const step = (): void => {
+      const el = scrollContainerRef.current
+      const motion = autoScrollMotionRef.current
+      const state = dragStateRef.current
+      if (!el || !motion || !state) {
+        stopAutoScroll()
+        return
+      }
+      el.scrollTop += motion.direction * motion.speed
+      updateDragTarget(state.id, state.currentY)
+      autoScrollRaf.current = requestAnimationFrame(step)
+    }
+    autoScrollRaf.current = requestAnimationFrame(step)
+  }
+
+  /** 45px edge zones: speed scales with how deep the pointer penetrates the zone (2→12 px/frame). */
+  const applyEdgeAutoScroll = (pointerY: number): void => {
+    const container = scrollContainerRef.current
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    if (pointerY < rect.top + 45) {
+      startAutoScroll(-1, Math.max(2, Math.min(12, ((rect.top + 45) - pointerY) / 3)))
+    } else if (pointerY > rect.bottom - 45) {
+      startAutoScroll(1, Math.max(2, Math.min(12, (pointerY - (rect.bottom - 45)) / 3)))
+    } else {
+      stopAutoScroll()
+    }
+  }
+
+  // Cancel any in-flight auto-scroll if the panel unmounts mid-drag
+  useEffect(() => stopAutoScroll, [])
 
   // Warm the next 4 covers
   usePreloadCovers(queue.slice(Math.max(0, currentIndex + 1), currentIndex + 5))
@@ -196,9 +284,10 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
       if (e.key === 'Escape') {
         const state = dragStateRef.current
         if (state) {
-          const fromY = state.currentY - state.startY
+          const fromY = state.currentY - state.startY + state.scrollDelta
           setSettling({ id: state.id, fromY, active: false })
         }
+        stopAutoScroll()
         dragStateRef.current = null
         setDragState(null)
       }
@@ -301,6 +390,7 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
         {/* Tab 1 — Queue: pointer events reorder + FLIP glide + click-to-play */}
         {activeTab === 'queue' && (
           <div
+            ref={scrollContainerRef}
             role="tabpanel"
             id="panel-queue"
             aria-labelledby="tab-queue"
@@ -356,7 +446,7 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
                         style={
                           isDragging
                             ? {
-                                transform: `translateY(${dragState.currentY - dragState.startY}px)`
+                                transform: `translateY(${dragState.currentY - dragState.startY + dragState.scrollDelta}px)`
                               }
                             : isSettling
                             ? {
@@ -395,7 +485,9 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
                               startIndex: index,
                               currentIndex: index,
                               startY: e.clientY,
-                              currentY: e.clientY
+                              currentY: e.clientY,
+                              startScrollTop: scrollContainerRef.current?.scrollTop ?? 0,
+                              scrollDelta: 0
                             }
                             dragStateRef.current = next
                             setDragState(next)
@@ -403,47 +495,22 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
                           onPointerMove={(e) => {
                             const state = dragStateRef.current
                             if (!state || state.id !== key) return
-                            const list = flipContainerRef.current
-                            if (!list) return
-
-                            const rows = Array.from(list.querySelectorAll<HTMLElement>('[data-track-id]'))
                             const pointerY = e.clientY
-                            let targetIndex = state.startIndex
-
-                            for (let idx = 0; idx < rows.length; idx++) {
-                              if (idx === state.startIndex) continue
-                              const rect = rows[idx].getBoundingClientRect()
-                              const midY = rect.top + rect.height / 2
-
-                              if (idx < state.startIndex) {
-                                if (pointerY < midY) {
-                                  targetIndex = idx
-                                  break
-                                }
-                              } else {
-                                if (pointerY < midY) {
-                                  targetIndex = idx - 1
-                                  break
-                                }
-                                targetIndex = idx
-                              }
-                            }
-
-                            const next: DragState = { ...state, currentY: pointerY, currentIndex: targetIndex }
-                            dragStateRef.current = next
-                            setDragState(next)
+                            applyEdgeAutoScroll(pointerY)
+                            updateDragTarget(key, pointerY)
                           }}
                           onPointerUp={(e) => {
                             const state = dragStateRef.current
                             if (!state || state.id !== key) return
+                            stopAutoScroll()
                             try {
                               ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
                             } catch {}
 
-                            const { startIndex, currentIndex, startY } = state
+                            const { startIndex, currentIndex, startY, scrollDelta } = state
                             const pointerY = e.clientY
                             const list = flipContainerRef.current
-                            let fromY = pointerY - startY
+                            let fromY = pointerY - startY + scrollDelta
                             if (list) {
                               const rows = Array.from(list.querySelectorAll<HTMLElement>('[data-track-id]'))
                               const startRow = rows[startIndex]
@@ -451,7 +518,7 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
                               if (startRow && targetRow) {
                                 const startTop = startRow.getBoundingClientRect().top
                                 const targetTop = targetRow.getBoundingClientRect().top
-                                fromY = (startTop + (pointerY - startY)) - targetTop
+                                fromY = (startTop + (pointerY - startY)) - targetTop + scrollDelta
                               }
                             }
 
@@ -474,12 +541,13 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
                             setDragState(null)
                           }}
                           onPointerCancel={(e) => {
+                            stopAutoScroll()
                             try {
                               ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
                             } catch {}
                             const state = dragStateRef.current
                             if (state) {
-                              const fromY = state.currentY - state.startY
+                              const fromY = state.currentY - state.startY + state.scrollDelta
                               setSettling({ id: state.id, fromY, active: false })
                             }
                             dragStateRef.current = null

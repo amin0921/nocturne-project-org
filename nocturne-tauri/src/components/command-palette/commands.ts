@@ -180,6 +180,16 @@ export const STUDIO_COMMANDS: CommandItem[] = [
     actionId: 'open-coverflow'
   },
   {
+    id: 'cmd-cinema',
+    title: 'استیج سینمایی / Cinema Stage',
+    category: 'view',
+    categoryLabel: 'View',
+    shortcut: ['Shift', 'F'],
+    icon: 'Maximize2',
+    keywords: ['cinema', 'stage', 'immersive', 'fullscreen', 'سینما', 'استیج', 'glow'],
+    actionId: 'open-cinema'
+  },
+  {
     id: 'cmd-mini',
     title: 'Toggle Mini-Island',
     category: 'window',
@@ -271,6 +281,11 @@ export const SHORTCUT_ATLAS_GROUPS: AtlasGroup[] = [
         title: 'Mini-Island Mode',
         shortcut: ['Shift', 'M'],
         description: 'Move playback into the floating mini capsule'
+      },
+      {
+        title: 'استیج سینمایی / Cinema Stage',
+        shortcut: ['Shift', 'F'],
+        description: 'Full-bleed immersive canvas with synced lyrics and ambient glow'
       }
     ]
   },

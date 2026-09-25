@@ -102,6 +102,46 @@ interface LrcLibItem {
 }
 
 /**
+ * Strict candidate validation for LRCLIB results.
+ * Rejects any record that: has no synced lyrics, does not mention the target
+ * artist (case-insensitive, either-direction substring), or is more than 5s
+ * away from the track duration (when both durations are known).
+ * Never lets a same-title track by a DIFFERENT artist pass.
+ */
+export function isCandidateValid(
+  candidate: LrcLibItem | null | undefined,
+  targetArtist: string,
+  targetDuration?: number
+): boolean {
+  if (!candidate || typeof candidate.syncedLyrics !== 'string' || candidate.syncedLyrics.trim().length === 0) {
+    return false
+  }
+
+  // 1. Strict artist match (case-insensitive substring / inclusion both ways)
+  const cArtist = (candidate.artistName ?? '').toLowerCase().trim()
+  const tArtist = (targetArtist ?? '').toLowerCase().trim()
+  if (tArtist) {
+    // Unknown/empty candidate artist can never be verified against a known target
+    if (!cArtist) return false
+    const artistMatches = cArtist.includes(tArtist) || tArtist.includes(cArtist)
+    if (!artistMatches) return false
+  }
+
+  // 2. Strict duration match (±5 seconds tolerance when both sides know duration)
+  if (
+    typeof targetDuration === 'number' &&
+    targetDuration > 0 &&
+    typeof candidate.duration === 'number' &&
+    Number.isFinite(candidate.duration)
+  ) {
+    const diff = Math.abs(candidate.duration - targetDuration)
+    if (diff > 5) return false
+  }
+
+  return true
+}
+
+/**
  * Fetches synchronized LRC lyrics from LRCLIB (open-source synced lyrics API).
  * Tries exact match first via /api/get across title candidates, then falls back
  * to /api/search?q=... for bilingual / Persian queries.
@@ -149,9 +189,9 @@ export async function fetchLyricsOnline(
 
         if (getRes.status === 200) {
           const data = (await getRes.json()) as LrcLibItem
-          if (data?.syncedLyrics && typeof data.syncedLyrics === 'string' && data.syncedLyrics.trim().length > 0) {
+          if (isCandidateValid(data, cleanArtist, duration)) {
             window.clearTimeout(timeoutId)
-            return data.syncedLyrics
+            return data.syncedLyrics ?? null
           }
         }
       } catch {
@@ -188,19 +228,30 @@ export async function fetchLyricsOnline(
         if (searchRes.status === 200) {
           const results = (await searchRes.json()) as LrcLibItem[]
           if (Array.isArray(results) && results.length > 0) {
-            const candidates = results.filter((r) => r.syncedLyrics && r.syncedLyrics.trim().length > 0)
-            if (candidates.length > 0) {
-              let match = candidates[0]
+            // STRICT: only candidates whose artist (and duration) verify against this track
+            const valid = results.filter((r) => isCandidateValid(r, cleanArtist, duration))
+            if (valid.length > 0) {
+              let match = valid[0]
               if (duration && duration > 0) {
-                const target = Math.round(duration)
-                match =
-                  candidates.find(
-                    (r) => typeof r.duration === 'number' && Math.abs(r.duration - target) <= 3
-                  ) ?? candidates[0]
+                match = valid.reduce((best, r) => {
+                  const bestDiff =
+                    typeof best.duration === 'number' && Number.isFinite(best.duration)
+                      ? Math.abs(best.duration - duration)
+                      : Number.POSITIVE_INFINITY
+                  const rDiff =
+                    typeof r.duration === 'number' && Number.isFinite(r.duration)
+                      ? Math.abs(r.duration - duration)
+                      : Number.POSITIVE_INFINITY
+                  return rDiff < bestDiff ? r : best
+                })
               }
-              window.clearTimeout(timeoutId)
-              return match.syncedLyrics ?? null
+              if (match.syncedLyrics && match.syncedLyrics.trim().length > 0) {
+                window.clearTimeout(timeoutId)
+                return match.syncedLyrics
+              }
             }
+            // No verified candidate on this query — keep trying other queries,
+            // never accept another artist's song with the same title.
           }
         }
       } catch {

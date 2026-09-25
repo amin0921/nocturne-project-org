@@ -1,0 +1,252 @@
+/* ---------- Nocturne Cinema Stage Styles ---------- */
+
+/* Fixed Obsidian Canvas (fills the whole transparent window — corners stay see-through) */
+.stage,
+.cinema-stage {
+  --cs-bg: #0D0F15;
+  position: fixed;
+  inset: 0;
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  background: var(--cs-bg);
+  z-index: 50;
+  user-select: none;
+  transition: border-radius 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              border 0.3s ease;
+}
+
+/* Fullscreen Mode: Expand to Full Bleed with Zero Radius */
+.stage:fullscreen,
+.cinema-stage:fullscreen,
+.stage[data-fullscreen="true"],
+.cinema-stage[data-fullscreen="true"] {
+  inset: 0 !important;
+  border-radius: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Idle State: Enforces cursor hiding */
+.stage[data-idle="true"],
+.cinema-stage[data-idle="true"] {
+  cursor: none !important;
+}
+
+.stage[data-idle="true"] *,
+.cinema-stage[data-idle="true"] * {
+  cursor: none !important;
+}
+
+/* Fullscreen Atmospheric Backdrop using current album art */
+.stage-glow,
+.cinema-stage-glow {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: saturate(1.6) brightness(0.3) blur(80px);
+  transform: scale(1.15);
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.stage-glow.is-visible,
+.cinema-stage-glow.is-visible {
+  opacity: 0.85;
+}
+
+/* Soft Radial Amber Glow */
+.stage-amber,
+.cinema-stage-amber {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 35% 50%, rgba(245, 158, 11, 0.10) 0%, transparent 65%);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Dark Radial Perimeter Vignette */
+.stage-vignette,
+.cinema-stage-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at center, transparent 38%, rgba(13, 15, 21, 0.85) 80%, #0D0F15 100%);
+  pointer-events: none;
+  z-index: 3;
+}
+
+/* Symmetric 50/50 Grid: fixed bays so lyric width can never displace the cover */
+.stage-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  position: relative;
+  z-index: 10;
+}
+
+/* Artwork Wrapper: Holds the shadow isolated from -webkit-box-reflect to eliminate sharp clipping */
+.stage-art-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+  border-radius: 18px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.60), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  background-color: #121419;
+}
+
+/* Cover Image with 1:1 Aspect Ratio, Rounded 18px & Clean Mirror Reflection */
+.stage-art {
+  aspect-ratio: 1;
+  width: min(38vw, 52vh);
+  max-width: 500px;
+  min-width: 260px;
+  border-radius: 18px;
+  box-shadow: none; /* Isolated on .stage-art-wrap to prevent box-reflect clipping */
+  -webkit-box-reflect: below 8px linear-gradient(transparent 55%, rgba(0, 0, 0, 0.45));
+  object-fit: cover;
+  background-color: transparent;
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+/* Synced Lyrics Container (62vh with Vertical Fade Mask & 26vh Center Scroll Padding) */
+.stage-lyrics {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 62vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-left: 2rem;
+  padding-right: 2rem;
+  padding-top: 26vh;
+  padding-bottom: 26vh;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 82%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 82%, transparent 100%);
+}
+
+.stage-lyrics::-webkit-scrollbar {
+  display: none;
+}
+
+/* Individual Lyric Line */
+.lyric-line {
+  display: block;
+  font-size: clamp(2rem, 3.2vw, 2.5rem);
+  font-weight: 900;
+  line-height: 1.333;
+  padding: 0.85rem 0;
+  color: #F2F3F5;
+  opacity: 0.3;
+  transform: scale(0.95);
+  transform-origin: left center;
+  transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+              color 0.35s ease,
+              text-shadow 0.35s ease;
+  cursor: pointer;
+}
+
+[dir="rtl"] .lyric-line,
+.lyric-line[dir="rtl"] {
+  transform-origin: right center;
+}
+
+.lyric-line:hover {
+  opacity: 0.65;
+}
+
+.lyric-line[data-active="true"] {
+  opacity: 1;
+  transform: scale(1);
+  color: #f59e0b; /* Studio Amber */
+  text-shadow: 0 0 32px rgba(245, 158, 11, 0.35);
+}
+
+/* Top Bar and Bottom Chrome Auto-Hide Behavior */
+.stage-topbar {
+  position: absolute;
+  top: 1.5rem;
+  left: 2rem;
+  right: 2rem;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  filter: blur(0);
+  transition: opacity 350ms cubic-bezier(0.16, 1, 0.3, 1),
+              visibility 350ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 350ms cubic-bezier(0.16, 1, 0.3, 1),
+              filter 350ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.stage-chrome {
+  position: absolute;
+  bottom: 2rem;
+  left: 50%;
+  transform: translateX(-50%) translateY(0);
+  z-index: 30;
+  width: min(680px, 92vw);
+  opacity: 1;
+  visibility: visible;
+  filter: blur(0);
+  transition: opacity 350ms cubic-bezier(0.16, 1, 0.3, 1),
+              visibility 350ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 350ms cubic-bezier(0.16, 1, 0.3, 1),
+              filter 350ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Idle State: Auto-Hide Chrome over 350ms with translateY(8px) and blur(2px) */
+.stage[data-idle="true"] .stage-topbar,
+.cinema-stage[data-idle="true"] .stage-topbar {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px);
+  filter: blur(2px);
+  pointer-events: none;
+}
+
+.stage[data-idle="true"] .stage-chrome,
+.cinema-stage[data-idle="true"] .stage-chrome {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-50%) translateY(8px);
+  filter: blur(2px);
+  pointer-events: none;
+}
+
+/* Prefers Reduced Motion Guard */
+@media (prefers-reduced-motion: reduce) {
+  .stage-glow,
+  .cinema-stage-glow {
+    transition: none !important;
+    filter: none !important;
+  }
+  .stage-art {
+    transition: none !important;
+    transform: none !important;
+  }
+  .lyric-line {
+    transition: none !important;
+    transform: none !important;
+  }
+  .stage-topbar,
+  .stage-chrome {
+    transition: opacity 150ms ease !important;
+    transform: none !important;
+    filter: none !important;
+  }
+}

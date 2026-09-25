@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Disc3, MicVocal, Music } from 'lucide-react'
+import { Disc3, Maximize2, MicVocal, Music } from 'lucide-react'
 import { useUIStore } from '../stores/useUIStore'
 import { usePlayerStore } from '../stores/usePlayerStore'
 import { AmbientGlow } from './AmbientGlow'
@@ -63,7 +63,16 @@ export function CenterIsland({
 
         <WindowGripPill label="Nocturne" className="hidden sm:flex" />
 
-        <div className="pointer-events-auto shrink-0">
+        <div className="pointer-events-auto shrink-0 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => useUIStore.getState().setCinemaOpen(true)}
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#121419]/80 text-muted hover:border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-400 transition-all duration-200 active:scale-95"
+            title="Cinema Stage / استیج سینمایی (Shift+F)"
+            aria-label="Open Cinema Stage"
+          >
+            <Maximize2 size={14} />
+          </button>
           <ViewToggle />
         </div>
       </div>
@@ -126,10 +135,14 @@ export function CenterIsland({
                   className="inset-[-40px]"
                 />
 
-                <TiltCard className="relative aspect-square shrink-0 w-56 sm:w-64 md:w-72 max-w-[320px] rounded-2xl cursor-pointer">
+                <TiltCard
+                  data-stage-cover="true"
+                  className="relative aspect-square shrink-0 w-56 sm:w-64 md:w-72 max-w-[320px] rounded-2xl cursor-pointer"
+                >
                   <div className="relative h-full w-full overflow-hidden rounded-2xl border border-white/10 shadow-[0_24px_50px_-12px_rgba(0,0,0,0.8)] bg-[#121419]">
                     {coverSrc ? (
                       <img
+                        data-stage-cover="true"
                         src={coverSrc}
                         alt={currentTrack.title}
                         draggable={false}

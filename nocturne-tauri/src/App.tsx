@@ -6,6 +6,7 @@ import { LogicalPosition, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { Copy, Disc3, Minus, Play, Square, Trash2, X } from 'lucide-react'
 import CoverFlowView from './components/CoverFlowView'
+import { CinemaStage } from './components/cinema'
 import PlayerBar from './components/PlayerBar'
 import MicroDock from './components/MicroDock'
 import CenterIsland from './components/CenterIsland'
@@ -83,6 +84,8 @@ export default function App(): JSX.Element {
 
   const view = useUIStore((s) => s.view)
   const setView = useUIStore((s) => s.setView)
+  const cinemaOpen = useUIStore((s) => s.cinemaOpen)
+  const setCinemaOpen = useUIStore((s) => s.setCinemaOpen)
   const currentTrackId = usePlayerStore((s) => s.currentTrack?.id ?? null)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
 
@@ -267,10 +270,25 @@ export default function App(): JSX.Element {
         e.preventDefault()
         setView('stats')
       }
+
+      // Cinema Stage hotkey: Shift+F, Ctrl+Shift+F, or F (when not typing)
+      if (
+        !isTyping &&
+        (
+          ((e.shiftKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) ||
+          (e.key === 'f' || e.key === 'F')
+        )
+      ) {
+        if (!e.altKey && !e.metaKey) {
+          e.preventDefault()
+          setCinemaOpen(true)
+          return
+        }
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [setView])
+  }, [setView, setCinemaOpen])
 
   const handleRunCommand = useCallback(
     (actionId: string) => {
@@ -317,6 +335,9 @@ export default function App(): JSX.Element {
           break
         case 'open-coverflow':
           setIsCoverViewOpen(true)
+          break
+        case 'open-cinema':
+          setCinemaOpen(true)
           break
         case 'toggle-miniplayer':
           try {
@@ -670,43 +691,45 @@ export default function App(): JSX.Element {
     <ErrorBoundary fallbackTitle="Nocturne Application Error" onReset={() => void reload()}>
       <div className={cn('nocturne-shell text-ink select-none relative', isMaximized && 'is-maximized')}>
         {/* Floating Window Controls in top-right */}
-        <div
-          className="absolute top-3 right-4 z-[60] flex items-center gap-1 rounded-xl border border-white/10 bg-[#121419]/90 px-1.5 py-1 backdrop-blur-xl pointer-events-auto"
-          onPointerDown={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <button
-            type="button"
-            onClick={() => void handleMinimize()}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-faint transition-colors hover:bg-white/10 hover:text-ink focus-visible:outline-none"
-            aria-label="Minimize window"
-            title="Minimize"
+        {!cinemaOpen && (
+          <div
+            className="absolute top-3 right-4 z-[60] flex items-center gap-1 rounded-xl border border-white/10 bg-[#121419]/90 px-1.5 py-1 backdrop-blur-xl pointer-events-auto"
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
           >
-            <Minus size={14} aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleToggleMaximize()}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-faint transition-colors hover:bg-white/10 hover:text-ink focus-visible:outline-none"
-            aria-label={isMaximized ? 'Restore window' : 'Maximize window'}
-            title={isMaximized ? 'Restore' : 'Maximize'}
-          >
-            {isMaximized ? (
-              <Copy size={13} className="rotate-90" aria-hidden />
-            ) : (
-              <Square size={13} aria-hidden />
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleClose()}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-faint transition-colors hover:bg-red-500/80 hover:text-white focus-visible:outline-none"
-            aria-label="Close window"
-            title="Close"
-          >
-            <X size={14} aria-hidden />
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => void handleMinimize()}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-faint transition-colors hover:bg-white/10 hover:text-ink focus-visible:outline-none"
+              aria-label="Minimize window"
+              title="Minimize"
+            >
+              <Minus size={14} aria-hidden />
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleToggleMaximize()}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-faint transition-colors hover:bg-white/10 hover:text-ink focus-visible:outline-none"
+              aria-label={isMaximized ? 'Restore window' : 'Maximize window'}
+              title={isMaximized ? 'Restore' : 'Maximize'}
+            >
+              {isMaximized ? (
+                <Copy size={13} className="rotate-90" aria-hidden />
+              ) : (
+                <Square size={13} aria-hidden />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleClose()}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-faint transition-colors hover:bg-red-500/80 hover:text-white focus-visible:outline-none"
+              aria-label="Close window"
+              title="Close"
+            >
+              <X size={14} aria-hidden />
+            </button>
+          </div>
+        )}
 
         {/* Left Dock Island (MicroDock) */}
         <div
@@ -793,6 +816,13 @@ export default function App(): JSX.Element {
               }}
               onDismiss={() => setIsCoverViewOpen(false)}
             />
+          </ErrorBoundary>
+        )}
+
+        {/* Immersive Cinema Stage Modal */}
+        {cinemaOpen && (
+          <ErrorBoundary fallbackTitle="Cinema Stage Error" onReset={() => setCinemaOpen(false)}>
+            <CinemaStage onClose={() => setCinemaOpen(false)} />
           </ErrorBoundary>
         )}
 

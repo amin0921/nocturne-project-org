@@ -181,6 +181,27 @@ pub fn save_cached_lyrics(file_path: String, content: String) -> Result<(), Stri
     std::fs::write(&lrc_path, content.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// Deletes the sibling `.lrc` file beside `file_path` (bad / mismatched cached lyrics).
+/// Idempotent: returns Ok(true) when no lyrics file remains beside the track.
+#[tauri::command]
+pub fn delete_cached_lyrics(file_path: String) -> Result<bool, String> {
+    if file_path.contains("..") {
+        return Err("invalid path".to_string());
+    }
+    let audio_path = PathBuf::from(&file_path);
+    let lrc_path = audio_path.with_extension("lrc");
+
+    if !lrc_path.exists() {
+        return Ok(true);
+    }
+    if !lrc_path.is_file() {
+        return Ok(false);
+    }
+
+    std::fs::remove_file(&lrc_path).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RankedItemDto {
@@ -568,6 +589,27 @@ mod tests {
         assert!(lrc_file.exists());
         let read_back = std::fs::read_to_string(&lrc_file).unwrap();
         assert_eq!(read_back, "[00:02.50]Cached lyrics");
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    #[test]
+    fn delete_cached_lyrics_removes_sibling_lrc() {
+        let test_dir = std::env::temp_dir().join(format!("nocturne_test_delete_lyrics_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&test_dir);
+        let audio_file = test_dir.join("bad_song.mp3");
+        let lrc_file = test_dir.join("bad_song.lrc");
+
+        std::fs::write(&lrc_file, "[00:01.00]Wrong artist lyrics").unwrap();
+
+        let removed = delete_cached_lyrics(audio_file.to_string_lossy().to_string()).unwrap();
+        assert!(removed);
+        assert!(!lrc_file.exists());
+
+        let again = delete_cached_lyrics(audio_file.to_string_lossy().to_string()).unwrap();
+        assert!(again);
+
+        assert!(delete_cached_lyrics("..\\..\\escaped_track.mp3".to_string()).is_err());
 
         let _ = std::fs::remove_dir_all(&test_dir);
     }
