@@ -15,6 +15,7 @@ import { useUIStore } from '../stores/useUIStore'
  *
  * Guards:
  * - Never intercept while typing (INPUT / TEXTAREA / contentEditable).
+ * - Never intercept while inside CoverFlow or modal carousels (role="listbox", [data-coverflow], .coverflow-container).
  * - Space is skipped when a native Space-activating control (button / link)
  *   holds focus, so the browser's own activation wins and play never
  *   double-toggles; Space repeats are ignored (held key = single toggle).
@@ -34,8 +35,24 @@ export function useStudioHotkeys(): void {
     const isModifierChord = (e: KeyboardEvent): boolean =>
       e.ctrlKey || e.metaKey || e.altKey
 
+    const isCoverFlowActive = (e: KeyboardEvent): boolean => {
+      if (document.activeElement?.closest('[role="listbox"], [data-coverflow], .coverflow-container')) {
+        return true
+      }
+      const target = e.target instanceof Element ? e.target : null
+      if (target?.closest('[role="listbox"], [data-coverflow], .coverflow-container')) {
+        return true
+      }
+      if (document.querySelector('[data-coverflow], .coverflow-container')) {
+        return true
+      }
+      return false
+    }
+
     const handleKeyDown = (e: KeyboardEvent): void => {
       if (isTyping() || isModifierChord(e)) return
+      if (document.activeElement?.closest('[role="listbox"], [data-coverflow], .coverflow-container')) return
+      if (isCoverFlowActive(e)) return
 
       const key = e.key
       const code = e.code
@@ -52,6 +69,7 @@ export function useStudioHotkeys(): void {
       }
 
       if (code === 'ArrowRight' || key === 'ArrowRight') {
+        if (isCoverFlowActive(e)) return
         const { currentTime, duration, currentTrack } = usePlayerStore.getState()
         if (!currentTrack || !duration || duration <= 0) return
         e.preventDefault()
@@ -60,6 +78,7 @@ export function useStudioHotkeys(): void {
       }
 
       if (code === 'ArrowLeft' || key === 'ArrowLeft') {
+        if (isCoverFlowActive(e)) return
         const { currentTime, currentTrack } = usePlayerStore.getState()
         if (!currentTrack) return
         e.preventDefault()

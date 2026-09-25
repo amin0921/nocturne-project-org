@@ -74,20 +74,80 @@ export default function CoverFlowView({
     setSelectedIndex((prev) => Math.max(0, prev - 1))
   }, [])
 
-  // Keyboard navigation handler
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
+  // React keyboard navigation handler for CoverFlow container and controls
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
       if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
         e.preventDefault()
+        e.stopPropagation()
+        e.nativeEvent.stopImmediatePropagation()
         goToNext()
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
         e.preventDefault()
+        e.stopPropagation()
+        e.nativeEvent.stopImmediatePropagation()
         goToPrev()
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        e.stopPropagation()
+        e.nativeEvent.stopImmediatePropagation()
+        setSelectedIndex(0)
+      } else if (e.key === 'End') {
+        e.preventDefault()
+        e.stopPropagation()
+        e.nativeEvent.stopImmediatePropagation()
+        setSelectedIndex(safeTracks.length > 0 ? safeTracks.length - 1 : 0)
       } else if (e.key === 'Escape') {
         e.preventDefault()
-        onDismiss()
+        e.stopPropagation()
+        e.nativeEvent.stopImmediatePropagation()
+        onDismiss?.()
       } else if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault()
+        e.stopPropagation()
+        e.nativeEvent.stopImmediatePropagation()
+        const selected = safeTracks[selectedIndex]
+        if (selected && onSelectTrack) {
+          onSelectTrack(selected, selectedIndex)
+        }
+      }
+    },
+    [goToNext, goToPrev, onDismiss, onSelectTrack, safeTracks, selectedIndex]
+  )
+
+  // Window capture-phase keyboard listener: intercepts navigation hotkeys before
+  // bubbling to global transport listeners (e.g. useStudioHotkeys seek)
+  useEffect(() => {
+    function handleWindowKeyDown(e: KeyboardEvent) {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        goToNext()
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        goToPrev()
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        setSelectedIndex(0)
+      } else if (e.key === 'End') {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        setSelectedIndex(safeTracks.length > 0 ? safeTracks.length - 1 : 0)
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        onDismiss?.()
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
         const selected = safeTracks[selectedIndex]
         if (selected && onSelectTrack) {
           onSelectTrack(selected, selectedIndex)
@@ -95,9 +155,9 @@ export default function CoverFlowView({
       }
     }
 
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [goToNext, goToPrev, onDismiss, onSelectTrack, selectedIndex, safeTracks])
+    window.addEventListener('keydown', handleWindowKeyDown, true)
+    return () => window.removeEventListener('keydown', handleWindowKeyDown, true)
+  }, [goToNext, goToPrev, onDismiss, onSelectTrack, safeTracks, selectedIndex])
 
   // Focus container for accessibility
   useEffect(() => {
@@ -152,10 +212,16 @@ export default function CoverFlowView({
       role="dialog"
       aria-modal="true"
       aria-label="3D CoverFlow Carousel"
-      className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none select-none outline-none border-0 shadow-none bg-transparent"
+      data-coverflow="true"
+      onKeyDown={onKeyDown}
+      className="coverflow-container fixed inset-0 z-50 flex items-center justify-center pointer-events-none select-none outline-none border-0 shadow-none bg-transparent"
     >
       {/* Detached floating glass island: single boundary element with 100% solid dark opaque surface */}
-      <div className="relative m-4 flex h-[calc(100%-2rem)] w-[calc(100%-2rem)] flex-col items-center justify-between rounded-3xl border border-white/10 overflow-hidden bg-[#0A0B0E] pointer-events-auto p-4 md:p-6 shadow-none outline-none ring-0">
+      <div
+        data-coverflow="true"
+        onKeyDown={onKeyDown}
+        className="coverflow-container relative m-4 flex h-[calc(100%-2rem)] w-[calc(100%-2rem)] flex-col items-center justify-between rounded-3xl border border-white/10 overflow-hidden bg-[#0A0B0E] pointer-events-auto p-4 md:p-6 shadow-none outline-none ring-0"
+      >
         {/* Top Bar with Badge, Drag Handle Pill, and Close button (reserves pr-28 clearance for top-right window controls) */}
         <header className="relative z-20 flex w-full max-w-6xl items-center justify-between px-2 pt-1 pr-28 select-none border-none outline-none">
           <div className="flex items-center gap-2.5">
@@ -172,6 +238,7 @@ export default function CoverFlowView({
           <button
             type="button"
             onClick={onDismiss}
+            onKeyDown={onKeyDown}
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
             className="group pointer-events-auto flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-[#121419] text-muted shadow-lg transition-all hover:border-white/20 hover:bg-white/10 hover:text-white active:scale-95 focus-visible:outline-none"
@@ -203,7 +270,12 @@ export default function CoverFlowView({
             </div>
           ) : (
             <div
-              className="relative flex items-center justify-center w-full h-80 md:h-96"
+              role="listbox"
+              data-coverflow="true"
+              aria-label="CoverFlow Albums"
+              tabIndex={-1}
+              onKeyDown={onKeyDown}
+              className="coverflow-container relative flex items-center justify-center w-full h-80 md:h-96"
               style={{ transformStyle: 'preserve-3d' }}
             >
               {visibleCards.map(({ track, index, offset }) => {
@@ -247,6 +319,8 @@ export default function CoverFlowView({
                 return (
                   <div
                     key={trackKey}
+                    data-coverflow="true"
+                    onKeyDown={onKeyDown}
                     onClick={() => {
                       if (isCenter) {
                         onSelectTrack(track, index)
@@ -337,6 +411,7 @@ export default function CoverFlowView({
             <button
               type="button"
               onClick={goToPrev}
+              onKeyDown={onKeyDown}
               disabled={clampedIndex === 0}
               className="absolute left-2 md:left-6 top-1/2 -translate-y-1/2 z-30 flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-[#121419] text-muted shadow-2xl transition-all hover:border-white/20 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none active:scale-95 focus-visible:outline-none"
               aria-label="Previous album"
@@ -346,6 +421,7 @@ export default function CoverFlowView({
             <button
               type="button"
               onClick={goToNext}
+              onKeyDown={onKeyDown}
               disabled={clampedIndex === safeTracks.length - 1}
               className="absolute right-2 md:right-6 top-1/2 -translate-y-1/2 z-30 flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-[#121419] text-muted shadow-2xl transition-all hover:border-white/20 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:pointer-events-none active:scale-95 focus-visible:outline-none"
               aria-label="Next album"
