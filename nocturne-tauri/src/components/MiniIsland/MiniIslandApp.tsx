@@ -7,10 +7,15 @@ import { MINI_POSITION_STORAGE_KEY } from '../../services/player-broadcast'
 
 /**
  * MiniIslandApp — root shell for the transparent mini-island window (360x130).
- * Centered morphing card; collapse via the outer transparent padding
- * (pointerdown/ click where target === root — never card taps, which drive
- * drag/expand), the expanded-card chevron, or Escape. Blocks the webview
- * context menu (no Refresh/Inspect escape hatch). window.focus() on mount so
+ * Centered morphing card; collapse via the outer transparent overlay
+ * (pointerdown/ click where target === root, or anywhere the card does not
+ * contain the press — never card taps, which drive drag/expand), the
+ * expanded-card chevron (onCollapse), the card's empty squircle corners
+ * (handled inside MiniIslandCard), or Escape. Patch 140: the overlay handler
+ * is explicitly gated on isExpanded and carries data-tauri-drag-region="false"
+ * so no drag surface can intercept a press meant for the collapse trigger.
+ * Blocks the webview context menu (no Refresh/Inspect escape hatch).
+ * window.focus() on mount so
  * keydown reaches this webview; App.tsx re-focuses on every show() (the
  * window is created with focus:false). Persists physical position on move —
  * guarded for 600ms after mount and after every 'mini-island:reveal' so
@@ -112,20 +117,38 @@ export default function MiniIslandApp(): JSX.Element {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [collapse])
 
-  const collapseFromPadding = (target: EventTarget | null, current: EventTarget | null): void => {
-    if (target === current) collapse()
+  // Patch 140 — explicit pointer-down collapse on the transparent overlay
+  // (window padding around the card). Gated on isExpanded so collapsed-pill
+  // taps are never hijacked, and target === currentTarget guarantees a press
+  // on the card itself (or its controls) can never collapse it; the
+  // contains() branch additionally covers presses that land on html/body/#root,
+  // i.e. anywhere the overlay itself is not the hit target.
+  const collapseFromOverlay = (
+    e: React.PointerEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>
+  ): void => {
+    if (!isExpanded) return
+    const target = e.target
+    if (
+      target === e.currentTarget ||
+      !(target instanceof Node) ||
+      !e.currentTarget.contains(target)
+    ) {
+      collapse()
+    }
   }
 
   return (
     <div
+      data-tauri-drag-region="false"
       className="flex h-[130px] w-[360px] items-center justify-center bg-transparent select-none"
       onContextMenu={(e) => e.preventDefault()}
-      onPointerDown={(e) => collapseFromPadding(e.target, e.currentTarget)}
-      onClick={(e) => collapseFromPadding(e.target, e.currentTarget)}
+      onPointerDown={collapseFromOverlay}
+      onClick={collapseFromOverlay}
     >
       <MiniIslandCard
         isExpanded={isExpanded}
         onToggleExpand={toggleExpand}
+        onCollapse={collapse}
         enterKey={enterKey}
       />
     </div>
