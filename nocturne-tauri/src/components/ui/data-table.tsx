@@ -47,7 +47,15 @@ export function DataTable<T>({
   const safeRows = Array.isArray(rows) ? rows : []
 
   return (
-    <div className="flex-1 overflow-y-auto bg-[#121419]/95" role="grid" aria-label={ariaLabel}>
+    /* min-w-0 + w-full + overflow-x-hidden: without min-w-0 this flex child
+       keeps its content's intrinsic width, so during a maximize/restore the
+       table refused to shrink and pushed the 320px queue column off-screen.
+       `table-fixed` below then distributes the available width instead. */
+    <div
+      className="min-w-0 w-full flex-1 overflow-x-hidden overflow-y-auto bg-[#121419]/95"
+      role="grid"
+      aria-label={ariaLabel}
+    >
       <table className="w-full table-fixed border-collapse text-left">
         <thead className="sticky top-0 z-10 bg-[#121419] border-b border-white/10 backdrop-blur-md">
           <tr>
@@ -57,6 +65,7 @@ export function DataTable<T>({
                 scope="col"
                 className={cn(
                   'border-b border-white/10 px-4 py-2.5 text-[11px] font-medium uppercase tracking-wider text-faint',
+                  'truncate whitespace-nowrap',
                   i === 0 && 'pl-5',
                   i === safeColumns.length - 1 && 'pr-5',
                   col.headerClassName

@@ -92,26 +92,26 @@ export default function App(): JSX.Element {
   useEffect(() => {
     let active = true
     const win = getCurrentWindow()
-    win.isMaximized().then((max) => {
-      if (active) setIsMaximized(max)
-    }).catch(() => {})
 
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null
-
-    // Strictly debounced resize listener (250ms): runs once after window settles
-    const unlistenPromise = win.onResized(() => {
-      if (debounceTimer) clearTimeout(debounceTimer)
-      debounceTimer = setTimeout(() => {
-        if (!active) return
-        win.isMaximized().then((max) => {
+    // ZERO-DEBOUNCE maximize sync. The native HWND frame resizes immediately, so
+    // any trailing debounce (the previous 250ms) left a window where the OS
+    // viewport was already small while `.is-maximized` was still applied — the
+    // queue island and the PlayerBar's right half clipped outside the frame.
+    // This reads the state synchronously on every resize frame instead.
+    const syncMaximized = (): void => {
+      void win
+        .isMaximized()
+        .then((max) => {
           if (active) setIsMaximized(max)
-        }).catch(() => {})
-      }, 250)
-    })
+        })
+        .catch(() => {})
+    }
+
+    syncMaximized()
+    const unlistenPromise = win.onResized(syncMaximized)
 
     return () => {
       active = false
-      if (debounceTimer) clearTimeout(debounceTimer)
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {})
     }
   }, [])
@@ -439,13 +439,13 @@ export default function App(): JSX.Element {
       headerClassName: 'w-24 text-right',
       cellClassName: 'w-24',
       render: (track) => (
-        <span className="flex items-center justify-end gap-2">
+        <span className="flex min-w-0 items-center justify-end gap-2 overflow-hidden">
           {track?.missing === 1 && (
             <span className="shrink-0 rounded-full border border-linestrong px-2 py-0.5 text-[10px] uppercase tracking-wider text-faint">
               missing
             </span>
           )}
-          <span className="numeric text-xs tabular-nums text-faint">
+          <span className="numeric truncate text-xs tabular-nums text-faint">
             {formatTime(track?.duration_secs)}
           </span>
         </span>
@@ -599,14 +599,23 @@ export default function App(): JSX.Element {
     }
   }, [])
 
+  /**
+   * Optimistic maximize toggle: the layout class is committed BEFORE the native
+   * call resolves, so the DOM reflows in the same frame as the click instead of
+   * trailing the OS animation. A failed toggle re-syncs from the real state.
+   */
   const handleToggleMaximize = useCallback(async () => {
+    const win = getCurrentWindow()
     try {
-      const win = getCurrentWindow()
+      const next = !(await win.isMaximized())
+      setIsMaximized(next)
       await win.toggleMaximize()
-      const max = await win.isMaximized()
-      setIsMaximized(max)
     } catch (err) {
       console.debug('Window toggleMaximize error:', err)
+      win
+        .isMaximized()
+        .then((max) => setIsMaximized(max))
+        .catch(() => {})
     }
   }, [])
 
@@ -635,8 +644,8 @@ export default function App(): JSX.Element {
   )
 
   const libraryContent = (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="relative z-10 flex items-center gap-3 border-b border-white/5 px-5 py-2.5 pointer-events-auto">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="relative z-10 flex shrink-0 items-center gap-3 border-b border-white/5 px-5 py-2.5 pointer-events-auto">
         <SearchInput
           value={query}
           onChange={setQuery}

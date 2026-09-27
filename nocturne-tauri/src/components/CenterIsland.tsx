@@ -171,8 +171,12 @@ export function CenterIsland({
               style={{
                 opacity: swapFade,
                 pointerEvents: swapFade === 1 ? undefined : 'none',
-                transition:
-                  `transform 380ms cubic-bezier(0.16, 1, 0.3, 1), opacity ${swapFade === 1 ? '300ms ease' : '0ms'}, width 380ms cubic-bezier(0.16, 1, 0.3, 1), height 380ms cubic-bezier(0.16, 1, 0.3, 1), right 380ms cubic-bezier(0.16, 1, 0.3, 1), top 380ms cubic-bezier(0.16, 1, 0.3, 1), border-radius 380ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 380ms cubic-bezier(0.16, 1, 0.3, 1)`
+                // GPU-ONLY: the lyrics morph is a translate+scale, so width /
+                // height / right / top are deliberately NOT transitioned. Those
+                // layout properties used to keep easing for 380ms after a
+                // maximize/restore, so the stage box lagged the snapped native
+                // frame and clipped. Opacity crossfade + transform are unaffected.
+                transition: `transform 380ms cubic-bezier(0.16, 1, 0.3, 1), opacity ${swapFade === 1 ? '300ms ease' : '0ms'}`
               }}
             >
               {/* Artwork block: Adaptive Ambient Glow + TiltCard + floor reflection.
@@ -297,7 +301,7 @@ export function CenterIsland({
           <StatsDashboard />
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {libraryContent}
         </div>
       )}
