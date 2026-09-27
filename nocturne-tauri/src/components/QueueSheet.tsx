@@ -1,13 +1,15 @@
 import React from 'react'
 import { useUIStore } from '../stores/useUIStore'
-import { QueuePanel } from './QueuePanel'
+import { QueuePanel, type QueuePanelProps } from './QueuePanel'
 import { cn } from '../lib/utils'
+
+type QueueSheetProps = Pick<QueuePanelProps, 'onTrackContextMenu'>
 
 /**
  * QueueSheet Component
  * Responsive slide-over wrapper around QueuePanel for screens < 1024px.
  */
-export function QueueSheet(): JSX.Element {
+export function QueueSheet({ onTrackContextMenu }: QueueSheetProps): JSX.Element {
   const queueOpen = useUIStore((s) => s.queueOpen)
   const setQueueOpen = useUIStore((s) => s.setQueueOpen)
 
@@ -27,7 +29,7 @@ export function QueueSheet(): JSX.Element {
         )}
         aria-hidden={!queueOpen}
       >
-        <QueuePanel onClose={() => setQueueOpen(false)} />
+        <QueuePanel onClose={() => setQueueOpen(false)} onTrackContextMenu={onTrackContextMenu} />
       </div>
     </>
   )

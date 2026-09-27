@@ -252,6 +252,73 @@ pub fn delete_cached_lyrics(file_path: String) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Audio extensions the Explorer reveal may touch — mirrors
+/// `scanner::SUPPORTED_EXTS` (same pattern as `pick_audio_files`).
+const REVEAL_EXTS: &[&str] = &["mp3", "wav", "m4a", "aac"];
+
+/// Validates a path before it can reach the OS: rejects empty/`..` escapes,
+/// canonicalizes to an existing audio file, and requires the path to be
+/// catalogued in `tracks` (the library allowlist). Returns the normalized
+/// display path that Windows Explorer should be handed.
+fn validate_reveal_path(conn: &rusqlite::Connection, raw: &str) -> Result<String, String> {
+    let clean = raw.replace('/', "\\");
+    if clean.trim().is_empty() || clean.contains("..") {
+        return Err("invalid path".to_string());
+    }
+    let canonical = PathBuf::from(&clean)
+        .canonicalize()
+        .map_err(|e| format!("File not found ({e})"))?;
+    if !canonical.is_file() {
+        return Err("Path is not a file".to_string());
+    }
+    let ext = canonical
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !REVEAL_EXTS.contains(&ext.as_str()) {
+        return Err("Not a supported audio file".to_string());
+    }
+    let tracked: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM tracks WHERE file_path = ?1",
+            params![clean],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if tracked.is_none() {
+        return Err("Path is not in the library".to_string());
+    }
+    Ok(clean)
+}
+
+/// Highlights a library audio file in a native Windows Explorer window
+/// (`explorer /select,`). The webview only ever passes a DB-catalogued track
+/// path; validation happens in Rust so the OS is never pointed anywhere else.
+#[tauri::command]
+pub fn reveal_in_explorer(state: State<DbState>, path: String) -> Result<(), String> {
+    let clean_path = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        validate_reveal_path(&conn, &path)?
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        Command::new("explorer")
+            .args(["/select,", &clean_path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = clean_path;
+        Err("Only supported on Windows".into())
+    }
+}
+
 /// Reads the per-track lyric calibration offset (ms) from `lyric_offsets`.
 /// Absent track → `0` (perfectly aligned). Pure DB read — no disk writes.
 pub fn get_lyric_offset_impl(conn: &rusqlite::Connection, track_id: &str) -> Result<i32, String> {
@@ -783,5 +850,67 @@ mod tests {
             set_lyric_offset_impl(&conn, "range", offset).unwrap();
             assert_eq!(get_lyric_offset_impl(&conn, "range").unwrap(), offset);
         }
+    }
+
+    #[test]
+    fn reveal_path_rejects_escape_empty_foreign_and_non_audio() {
+        let conn = mem_db();
+
+        // Escape / empty inputs never reach the filesystem.
+        assert!(validate_reveal_path(&conn, "..\\..\\escape.mp3").is_err());
+        assert!(validate_reveal_path(&conn, "").is_err());
+        assert!(validate_reveal_path(&conn, "   ").is_err());
+
+        let dir = std::env::temp_dir().join(format!("nocturne_test_reveal_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Existing audio file that is NOT catalogued → library allowlist denies.
+        let foreign = dir.join("foreign.mp3");
+        std::fs::write(&foreign, b"x").unwrap();
+        assert!(validate_reveal_path(&conn, &foreign.to_string_lossy()).is_err());
+
+        // Catalogued or not, a non-audio extension is denied before any spawn.
+        let note = dir.join("note.txt");
+        std::fs::write(&note, b"not audio").unwrap();
+        assert!(validate_reveal_path(&conn, &note.to_string_lossy()).is_err());
+
+        // Nonexistent audio file → canonicalize fails.
+        let ghost = dir.join("ghost.mp3");
+        assert!(validate_reveal_path(&conn, &ghost.to_string_lossy()).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reveal_path_accepts_catalogued_audio_file() {
+        let conn = mem_db();
+        let dir = std::env::temp_dir().join(format!("nocturne_test_reveal_ok_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("catalogued.m4a");
+        std::fs::write(&file, b"").unwrap();
+        let path_str = file.to_string_lossy().to_string();
+
+        let now = crate::db::now_ms();
+        conn.execute(
+            "INSERT INTO folders (folder_path, date_added) VALUES (?1, ?2)",
+            params![dir.to_string_lossy().to_string(), now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracks (file_path, folder_id, title, date_added, last_seen_at)
+             VALUES (?1, 1, 'Song', ?2, ?2)",
+            params![path_str, now],
+        )
+        .unwrap();
+
+        // Display path round-trips unchanged…
+        assert_eq!(validate_reveal_path(&conn, &path_str).unwrap(), path_str);
+        // …and forward slashes are normalized before the allowlist lookup.
+        assert_eq!(
+            validate_reveal_path(&conn, &path_str.replace('\\', "/")).unwrap(),
+            path_str
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -7,7 +7,7 @@ mod scanner;
 use commands::{
     clear_library, delete_cached_lyrics, delete_track, get_listening_stats, get_lyric_offset,
     get_lyrics, get_tracks, import_audio_files, open_music_folder, pick_audio_files, pick_folder,
-    record_play, save_cached_lyrics, scan_folder, set_lyric_offset,
+    record_play, reveal_in_explorer, save_cached_lyrics, scan_folder, set_lyric_offset,
 };
 use db::{open_db, DbState};
 use std::sync::Mutex;
@@ -40,7 +40,8 @@ fn main() {
             record_play,
             get_listening_stats,
             get_lyric_offset,
-            set_lyric_offset
+            set_lyric_offset,
+            reveal_in_explorer
         ])
         .run(tauri::generate_context!())
         .expect("error while running nocturne");

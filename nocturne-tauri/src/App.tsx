@@ -4,7 +4,7 @@ import { emit, listen } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalPosition, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { Copy, Disc3, FileAudio, Minus, Play, Square, Trash2, X } from 'lucide-react'
+import { Copy, Disc3, FileAudio, Minus, Square, Trash2, X } from 'lucide-react'
 import CoverFlowView from './components/CoverFlowView'
 import { CinemaStage } from './components/cinema'
 import PlayerBar from './components/PlayerBar'
@@ -12,10 +12,10 @@ import MicroDock from './components/MicroDock'
 import CenterIsland from './components/CenterIsland'
 import QueuePanel from './components/QueuePanel'
 import QueueSheet from './components/QueueSheet'
+import TrackContextMenu from './components/TrackContextMenu'
 import EqBars from './components/EqBars'
 import ErrorBoundary from './components/ErrorBoundary'
 import { AlertDialog } from './components/ui/alert-dialog'
-import { ContextMenu, type ContextMenuItem } from './components/ui/context-menu'
 import { DataTable, type DataColumn } from './components/ui/data-table'
 import { SearchInput } from './components/ui/search-input'
 import { Spinner } from './components/ui/spinner'
@@ -73,7 +73,7 @@ export default function App(): JSX.Element {
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState<{ scanned: number; total: number } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [menu, setMenu] = useState<{ x: number; y: number; trackId: number } | null>(null)
+  const [trackMenu, setTrackMenu] = useState<{ track: PlayerTrack; x: number; y: number } | null>(null)
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
   const [pendingRemove, setPendingRemove] = useState<{ id: number; title: string } | null>(null)
   const [isCoverViewOpen, setIsCoverViewOpen] = useState(false)
@@ -385,14 +385,13 @@ export default function App(): JSX.Element {
     return `${total} track${total === 1 ? '' : 's'}`
   }, [tracks, filtered, query])
 
-  const copyPath = useCallback(async (path: string) => {
-    try {
-      await navigator.clipboard.writeText(path)
-      setNotice('Path copied to clipboard')
-    } catch {
-      setNotice('Could not copy path')
-    }
+  // Right-click anywhere on a library or queue row → shared floating glass menu.
+  const handleTrackContextMenu = useCallback((track: PlayerTrack, e: React.MouseEvent) => {
+    e.preventDefault()
+    setTrackMenu({ track, x: e.clientX, y: e.clientY })
   }, [])
+
+  const closeTrackMenu = useCallback(() => setTrackMenu(null), [])
 
   const columns: DataColumn<PlayerTrack>[] = [
     {
@@ -717,9 +716,7 @@ export default function App(): JSX.Element {
           isRowDisabled={(track) => Boolean(track && track.missing === 1)}
           disabledTitle="File missing — moved or deleted"
           onRowContextMenu={(track, _index, event) => {
-            if (track) {
-              setMenu({ x: event.clientX, y: event.clientY, trackId: track.id })
-            }
+            if (track) handleTrackContextMenu(track, event)
           }}
         />
       )}
@@ -823,7 +820,7 @@ export default function App(): JSX.Element {
           aria-hidden={isCoverViewOpen}
         >
           <ErrorBoundary fallbackTitle="Queue Error">
-            <QueuePanel />
+            <QueuePanel onTrackContextMenu={handleTrackContextMenu} />
           </ErrorBoundary>
         </aside>
 
@@ -843,7 +840,7 @@ export default function App(): JSX.Element {
         </footer>
 
         {/* Responsive Slide-Over Sheet for screens < 1024px */}
-        <QueueSheet />
+        <QueueSheet onTrackContextMenu={handleTrackContextMenu} />
 
         {/* 3D CoverFlow Carousel Modal */}
         {isCoverViewOpen && (
@@ -871,46 +868,12 @@ export default function App(): JSX.Element {
           </ErrorBoundary>
         )}
 
-        {/* Context Menu for Tracks */}
-        {(() => {
-          if (!menu) return null
-          const track = tracks.find((t) => t.id === menu.trackId)
-          if (!track) return null
-          const items: ContextMenuItem[] = [
-            {
-              key: 'play',
-              label: 'Play',
-              icon: <Play size={15} aria-hidden />,
-              disabled: track.missing === 1,
-              onSelect: () => {
-                const index = tracks.findIndex((t) => t.id === track.id)
-                if (index >= 0) void playTrackAt(index)
-              }
-            },
-            {
-              key: 'copy',
-              label: 'Copy Path',
-              icon: <Copy size={15} aria-hidden />,
-              onSelect: () => void copyPath(track.path)
-            },
-            {
-              key: 'remove',
-              label: 'Remove from Library',
-              icon: <Trash2 size={15} aria-hidden />,
-              destructive: true,
-              onSelect: () => setPendingRemove({ id: track.id, title: track.title ?? 'Track' })
-            }
-          ]
-          return (
-            <ContextMenu
-              x={menu.x}
-              y={menu.y}
-              items={items}
-              onClose={() => setMenu(null)}
-              ariaLabel={`Actions for ${track.title ?? 'track'}`}
-            />
-          )
-        })()}
+        {/* Floating glass track context menu (library table + queue rows) */}
+        <TrackContextMenu
+          track={trackMenu?.track ?? null}
+          position={trackMenu ? { x: trackMenu.x, y: trackMenu.y } : null}
+          onClose={closeTrackMenu}
+        />
 
         {/* Clear Library Dialog */}
         <AlertDialog

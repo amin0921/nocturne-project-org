@@ -553,6 +553,30 @@ export function setQueueOrder(order: string[]): void {
   reorderQueue(next)
 }
 
+/**
+ * Slip `track` in right after the currently playing one (`index + 1`) — the
+ * audio element, position, mode and isPlaying are all untouched, so the next
+ * auto-advance simply picks the inserted track up. On an empty queue there is
+ * nothing to interrupt, so the track just starts playing.
+ */
+export function playNext(track: PlayerTrack): void {
+  ensureWiring()
+  const { queue, index } = snapshot
+  if (queue.length === 0) {
+    void playTracks([track], 0)
+    return
+  }
+  const nextQueue = queue.slice()
+  nextQueue.splice(Math.min(Math.max(index + 1, 0), nextQueue.length), 0, track)
+  set({ queue: nextQueue })
+}
+
+/** Append `track` to the very end of the queue — playback is untouched. */
+export function addToQueue(track: PlayerTrack): void {
+  ensureWiring()
+  set({ queue: [...snapshot.queue, track] })
+}
+
 export function setVolume(volume: number): void {
   ensureWiring()
   const v = Math.min(100, Math.max(0, Math.round(volume)))
@@ -634,6 +658,8 @@ usePlayerStore.getState = () => ({
   ...snapshot,
   clearQueue,
   setQueue,
+  playNext,
+  addToQueue,
   reorderQueue,
   setQueueOrder,
   playTracks,

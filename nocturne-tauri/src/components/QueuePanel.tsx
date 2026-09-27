@@ -60,6 +60,8 @@ function EmptyState({ icon, text, hint }: { icon: React.ReactNode; text: string;
 export interface QueuePanelProps {
   onClose?: () => void
   className?: string
+  /** Right-click hook for the shared floating glass track context menu. */
+  onTrackContextMenu?: (track: PlayerTrack, e: React.MouseEvent) => void
 }
 
 interface DragState {
@@ -82,7 +84,7 @@ interface DragState {
  * Every reorder captures a snapshot first, so Ctrl/Cmd+Z or the Undo toast
  * restores the previous order instantly while playback keeps running.
  */
-export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element {
+export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePanelProps): JSX.Element {
   const queue = usePlayerStore((s) => s.queue)
   const currentIndex = usePlayerStore((s) => s.index)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
@@ -469,6 +471,11 @@ export function QueuePanel({ onClose, className }: QueuePanelProps): JSX.Element
                           void playTrackAt(index)
                         }}
                         onKeyDown={(e) => onRowKeyDown(e, key)}
+                        onContextMenu={(e) => {
+                          if (!onTrackContextMenu) return
+                          e.preventDefault()
+                          onTrackContextMenu(t, e)
+                        }}
                       >
                         <span
                           className="drag pointer-events-auto"
