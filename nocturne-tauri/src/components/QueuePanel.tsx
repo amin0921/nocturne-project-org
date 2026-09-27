@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Disc3, GripVertical, History as HistoryIcon, ListMusic, Trash2, X } from 'lucide-react'
+import { Disc3, Dot, GripVertical, History as HistoryIcon, ListMusic, ListOrdered, Trash2, X, Zap } from 'lucide-react'
 import {
+  next,
+  playNext,
   playTrackAt,
-  setQueue,
+  queueItemId,
+  removeFromPriorityQueue,
   setQueueOrder,
   usePlayerStore,
   type PlayerTrack
@@ -86,6 +89,7 @@ interface DragState {
  */
 export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePanelProps): JSX.Element {
   const queue = usePlayerStore((s) => s.queue)
+  const priorityQueue = usePlayerStore((s) => s.priorityQueue)
   const currentIndex = usePlayerStore((s) => s.index)
   const currentTrack = usePlayerStore((s) => s.currentTrack)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
@@ -190,8 +194,20 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
   // Cancel any in-flight auto-scroll if the panel unmounts mid-drag
   useEffect(() => stopAutoScroll, [])
 
-  // Warm the next 4 covers
-  usePreloadCovers(queue.slice(Math.max(0, currentIndex + 1), currentIndex + 5))
+  // Warm the next 4 covers (priority tier first — it plays before the album).
+  usePreloadCovers(useMemo(
+    () => [...priorityQueue, ...queue.slice(Math.max(0, currentIndex + 1), currentIndex + 5)],
+    [priorityQueue, queue, currentIndex]
+  ))
+
+  /**
+   * Album label for the context section header. Falls back to "PLAYLIST" for
+   * untagged folder queues so the header never renders an empty title.
+   */
+  const contextLabel = useMemo(() => {
+    const album = currentTrack?.album || queue[currentIndex]?.album || queue[0]?.album || ''
+    return album.trim() || 'PLAYLIST'
+  }, [currentTrack?.album, queue, currentIndex])
 
   // Activate magnetic landing transition in the next paint frame
   useEffect(() => {
@@ -272,12 +288,13 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
     return () => window.clearInterval(timer)
   }, [activeTab])
 
-  // Scroll the playing row into view (queue tab only).
+  // Follow the playhead: whenever `index` changes, glide the active row into
+  // view inside the (very tall) full-playlist scroller.
   useEffect(() => {
     if (activeTab === 'queue' && activeItemRef.current) {
       activeItemRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
     }
-  }, [currentIndex, activeTab])
+  }, [currentIndex, currentTrack?.id, activeTab])
 
   // Escape key cancels active pointer drag with smooth return
   useEffect(() => {
@@ -298,10 +315,14 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [dragState])
 
-  /** Alt+ArrowUp / Alt+ArrowDown keyboard reorder (same snapshot + FLIP path). */
+  /**
+   * Alt+ArrowUp / Alt+ArrowDown keyboard reorder (same snapshot + FLIP path).
+   * Indices are absolute playlist positions over the FULL, never-truncated
+   * context list.
+   */
   const moveTrack = useCallback(
     (id: string, delta: number): void => {
-      const order = queue.map((t) => String(t.id))
+      const order = queue.map(queueItemId)
       const from = order.indexOf(id)
       const to = from + delta
       if (from < 0 || to < 0 || to >= order.length) return
@@ -335,8 +356,9 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
   }, [history, queue, getTrack])
 
   /**
-   * Replay from History: jump to the track when it is still queued, otherwise
-   * splice it in after the current track — the rest of the queue survives.
+   * Replay from History: jump to the track when it is still in the context
+   * playlist, otherwise push it to the top of the priority tier and step into
+   * it. The context queue is NEVER spliced, so the album stays intact.
    */
   const playHistoryTrack = useCallback(
     (id: string): void => {
@@ -347,13 +369,10 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
       }
       const track = getTrack(id)
       if (!track) return
-      const nextQueue = queue.slice()
-      const insertAt = currentIndex >= 0 && currentIndex < nextQueue.length ? currentIndex + 1 : 0
-      nextQueue.splice(insertAt, 0, track)
-      setQueue(nextQueue, insertAt)
-      void playTrackAt(insertAt)
+      playNext(track)
+      void next()
     },
-    [queue, currentIndex, getTrack]
+    [queue, getTrack]
   )
 
   const toastSnapshot = snapshot ?? ghostSnapshot
@@ -399,18 +418,126 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
             data-dragging={dragState !== null}
             className="nocturne-scroll nq-list min-h-0 flex-1 overflow-y-auto p-2"
           >
-            {queue.length === 0 ? (
+            {queue.length === 0 && priorityQueue.length === 0 ? (
               <EmptyState
                 icon={<ListMusic size={20} aria-hidden />}
                 text="Queue is empty"
                 hint="Add tracks from the library to queue them."
               />
             ) : (
-              <ul ref={flipContainerRef} className="nq-ul" aria-label="Upcoming tracks">
-                {queue.map((track, index) => {
+              <>
+                {/* ── NOW PLAYING ─────────────────────────────────────────── */}
+                {currentTrack && (
+                  <div className="nq-nowplaying" data-current="true">
+                    <span className="nq-nowplaying-tag">NOW PLAYING</span>
+                    <div className="size-9 shrink-0 overflow-hidden rounded-lg border border-amber-500/30 bg-white/5">
+                      {(() => {
+                        const src = resolveCoverUrl(currentTrack.coverUrl) ?? currentTrack.coverUrl
+                        return src ? (
+                          <img src={src} alt="" className="size-full object-cover" draggable={false} />
+                        ) : (
+                          <div className="grid size-full place-items-center text-white/30">
+                            <Disc3 size={16} />
+                          </div>
+                        )
+                      })()}
+                    </div>
+                    <span className="meta">
+                      <span className="title" dir="auto">
+                        {currentTrack.title}
+                      </span>
+                      <span className="sub" dir="auto">
+                        {currentTrack.artist}
+                      </span>
+                    </span>
+                    <EqBars isPlaying={isPlaying} />
+                    <span className="time numeric">{formatTime(currentTrack.duration_secs)}</span>
+                  </div>
+                )}
+
+                {/* ── TIER 1 — NEXT IN QUEUE (user priority, amber) ────────── */}
+                {priorityQueue.length > 0 && (
+                  <section className="nq-section" aria-label="Next in queue">
+                    <header className="nq-section-head nq-section-head-priority">
+                      <Zap size={11} aria-hidden />
+                      <span>NEXT IN QUEUE</span>
+                      <span className="nq-section-count">{priorityQueue.length}</span>
+                    </header>
+                    <ul className="nq-ul" data-priority="true">
+                      {priorityQueue.map((t) => {
+                        const key = queueItemId(t)
+                        const coverSrc = resolveCoverUrl(t.coverUrl) ?? t.coverUrl
+                        return (
+                          <li key={key} className="nq-item" data-priority-row={key}>
+                            <div
+                              className="nq-row nq-row-priority"
+                              role="listitem"
+                              onContextMenu={(e) => {
+                                if (!onTrackContextMenu) return
+                                e.preventDefault()
+                                onTrackContextMenu(t, e)
+                              }}
+                            >
+                              <span className="idx" aria-hidden="true">
+                                <Dot size={16} className="text-[#EAB308]" />
+                              </span>
+                              <div className="size-9 shrink-0 overflow-hidden rounded-lg border border-amber-500/20 bg-white/5">
+                                {coverSrc ? (
+                                  <img src={coverSrc} alt="" className="size-full object-cover" draggable={false} />
+                                ) : (
+                                  <div className="grid size-full place-items-center text-white/30">
+                                    <Disc3 size={16} />
+                                  </div>
+                                )}
+                              </div>
+                              <span className="meta">
+                                <span className="title" dir="auto">
+                                  {t.title}
+                                </span>
+                                <span className="sub" dir="auto">
+                                  {t.artist}
+                                </span>
+                              </span>
+                              <span className="time numeric">{formatTime(t.duration_secs)}</span>
+                              <button
+                                type="button"
+                                className="nq-remove"
+                                aria-label={`Remove ${t.title} from queue`}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  removeFromPriorityQueue(key)
+                                }}
+                              >
+                                <X size={12} aria-hidden />
+                              </button>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </section>
+                )}
+
+                {/* Obsidian glass separator between the two tiers */}
+                {priorityQueue.length > 0 && queue.length > 0 && <div className="nq-separator" aria-hidden="true" />}
+
+                {/* ── TIER 2 — THE COMPLETE PLAYLIST CONTEXT (never truncated) ── */}
+                {queue.length > 0 && (
+                  <section className="nq-section" aria-label={`Playlist ${contextLabel}`}>
+                    <header className="nq-section-head">
+                      <ListOrdered size={11} aria-hidden />
+                      <span>{contextLabel.toUpperCase()}</span>
+                      <span className="nq-section-total">{queue.length} TRACKS</span>
+                    </header>
+                    <ul ref={flipContainerRef} className="nq-ul" aria-label="Playlist tracks">
+                        {queue.map((track, index) => {
                   const t = track
-                  const key = String(t.id)
-                  const isActive = currentTrack !== null && t.id === currentTrack.id
+                  const key = queueItemId(t)
+                  const queueIndex = index
+                  // The playhead row lives in the full list, so the highlight is
+                  // index-driven. Matching on the id as well keeps a same-id row
+                  // from the priority tier from lighting up the wrong song.
+                  const isActive = queueIndex === currentIndex && currentTrack?.id === t.id
                   const coverSrc = resolveCoverUrl(t.coverUrl) ?? t.coverUrl
                   const isDragging = dragState?.id === key
                   const isSettling = settling?.id === key
@@ -468,7 +595,7 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
                         aria-current={isActive ? 'true' : undefined}
                         onClick={() => {
                           if (dragState !== null || isSettling) return
-                          void playTrackAt(index)
+                          void playTrackAt(queueIndex)
                         }}
                         onKeyDown={(e) => onRowKeyDown(e, key)}
                         onContextMenu={(e) => {
@@ -531,7 +658,7 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
 
                             const movedId = state.id
                             if (startIndex !== currentIndex) {
-                              const currentOrder = queue.map((tr) => String(tr.id))
+                              const currentOrder = queue.map(queueItemId)
                               beginReorder(currentOrder, 'Reordered')
 
                               const newOrder = [...currentOrder]
@@ -563,7 +690,7 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
                         >
                           <GripVertical size={14} />
                         </span>
-                        <span className="idx numeric">{String(index + 1).padStart(2, '0')}</span>
+                        <span className="idx numeric">{String(queueIndex + 1).padStart(2, '0')}</span>
                         <div className="size-9 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-white/5">
                           {coverSrc ? (
                             <img src={coverSrc} alt="" className="size-full object-cover" draggable={false} />
@@ -587,7 +714,10 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
                     </li>
                   )
                 })}
-              </ul>
+                    </ul>
+                  </section>
+                )}
+              </>
             )}
           </div>
         )}

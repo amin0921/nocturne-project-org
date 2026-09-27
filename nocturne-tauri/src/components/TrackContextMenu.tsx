@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { Copy, FolderOpen, ListMusic, ListPlus } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { addToQueue, playNext, type PlayerTrack } from '../stores/usePlayerStore'
@@ -22,6 +22,12 @@ interface TrackAction {
   run: (track: PlayerTrack) => void | Promise<unknown>
 }
 
+/**
+ * Queue actions write to the store's PRIORITY tier (the "NEXT IN QUEUE"
+ * section of the queue panel) and never touch the album/playlist order:
+ * "Play Next" lands on top of the user queue, "Add to End of Queue" lands at
+ * its tail. Playback drains that tier first, then resumes the intact playlist.
+ */
 const ACTIONS: TrackAction[] = [
   {
     key: 'play-next',
@@ -56,9 +62,11 @@ const ACTIONS: TrackAction[] = [
 ]
 
 /**
- * Floating obsidian glass capsule anchored to the right-click cursor.
- * Opens at scale-[0.96] → scale-100 over 150ms, clamps itself inside the
- * viewport, and dismisses on outside pointer-down, Escape, window blur,
+ * Floating SOLID obsidian capsule anchored to the right-click cursor.
+ * Fully opaque `#0D0F15` backdrop (zero bleed-through of the rows underneath)
+ * and unconstrained line-height so glyph descenders ('g', 'y', 'p') are never
+ * clipped. Opens at scale-[0.96] → scale-100 over 150ms, clamps itself inside
+ * the viewport, and dismisses on outside pointer-down, Escape, window blur,
  * resize or scroll. Shared by the library table and the queue panel.
  */
 export function TrackContextMenu({
@@ -69,11 +77,14 @@ export function TrackContextMenu({
   const menuRef = useRef<HTMLDivElement>(null)
   const open = track !== null && position !== null
   const [entered, setEntered] = useState(false)
+  /** Click locker: one menu item dispatches at most once per open session. */
+  const busyRef = useRef(false)
 
   // Entrance: paint one frame at scale-[0.96], then release the 150ms transition.
   useEffect(() => {
     if (!open) {
       setEntered(false)
+      busyRef.current = false
       return
     }
     let inner = 0
@@ -122,14 +133,29 @@ export function TrackContextMenu({
     Math.min(position.y, window.innerHeight - MENU_HEIGHT - EDGE_MARGIN)
   )
 
+  /**
+   * Strict single-execution dispatch: stop the event from bubbling to the row
+   * underneath, swallow the default action, run the payload exactly once (the
+   * locker rejects a second dispatch from the same open session), then close.
+   */
+  const handleAction = (e: ReactMouseEvent, action: TrackAction, target: PlayerTrack): void => {
+    e.stopPropagation()
+    e.preventDefault()
+    if (busyRef.current) return
+    busyRef.current = true
+    void action.run(target)
+    onClose()
+  }
+
   return (
     <div
       ref={menuRef}
       role="menu"
       aria-label={`Actions for ${track.title ?? 'track'}`}
-      style={{ left, top }}
+      style={{ left, top, WebkitFontSmoothing: 'antialiased', textRendering: 'optimizeLegibility' }}
       className={cn(
-        'fixed bg-[#0D0F15]/90 border border-white/10 shadow-2xl backdrop-blur-xl rounded-2xl p-1.5 min-w-[200px] select-none z-50',
+        'fixed z-50 min-w-[210px] rounded-2xl border border-white/10 bg-[#0D0F15] p-1.5 select-none',
+        'shadow-[0_16px_40px_rgba(0,0,0,0.85),0_0_0_1px_rgba(255,255,255,0.05)]',
         'transition-all duration-150 ease-out',
         entered ? 'scale-100 opacity-100' : 'scale-[0.96] opacity-0'
       )}
@@ -139,14 +165,11 @@ export function TrackContextMenu({
           key={action.key}
           type="button"
           role="menuitem"
-          onClick={() => {
-            void action.run(track)
-            onClose()
-          }}
-          className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[13px] leading-none text-muted transition-all duration-150 ease-out hover:bg-[#EAB308]/10 hover:text-[#EAB308] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#EAB308]/60"
+          onClick={(e) => handleAction(e, action, track)}
+          className="flex w-full items-center gap-2.5 overflow-visible rounded-xl px-3 py-2 text-left text-[13px] leading-normal text-muted transition-all duration-150 ease-out hover:bg-[#EAB308]/10 hover:text-[#EAB308] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#EAB308]/60"
         >
-          {action.icon}
-          <span dir="auto" className="truncate">
+          <span className="shrink-0">{action.icon}</span>
+          <span dir="auto" className="truncate overflow-visible font-medium">
             {action.label}
           </span>
         </button>

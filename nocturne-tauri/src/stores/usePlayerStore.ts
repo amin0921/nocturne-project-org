@@ -17,6 +17,25 @@ export interface PlayerTrack {
   duration_secs: number | null
   missing: number
   coverUrl?: string
+  /**
+   * Unique per queue slot. Assigned whenever a track is spliced INTO the queue,
+   * so two rows holding the same library track (e.g. "Play Next" on the song
+   * that is already playing) never share a React key or a FLIP identity.
+   */
+  queueId?: string
+}
+
+/** Monotonic queue-slot identity generator (never reused within a session). */
+let queueIdSeq = 0
+
+function nextQueueId(): string {
+  queueIdSeq += 1
+  return `q${queueIdSeq}`
+}
+
+/** Stable row identity: the queue slot id when present, else the library id. */
+export function queueItemId(track: PlayerTrack): string {
+  return track.queueId ?? String(track.id)
 }
 
 export type PlaybackMode = 'normal' | 'shuffle' | 'repeat-all' | 'repeat-one'
@@ -39,7 +58,15 @@ function saveFavorites(favs: Set<number>): void {
 }
 
 interface PlayerSnapshot {
+  /** Context queue: the pristine album / playlist / folder, never mutated by "Play Next". */
   queue: PlayerTrack[]
+  /**
+   * User Queue (priority tier): tracks explicitly queued via "Play Next" /
+   * "Add to End of Queue". Playback drains this list FIRST, one track at a
+   * time, without ever moving `index` inside the context queue — so the album
+   * order, numbering and active highlight stay exactly where the user left them.
+   */
+  priorityQueue: PlayerTrack[]
   index: number
   currentTrack: PlayerTrack | null
   isPlaying: boolean
@@ -57,6 +84,7 @@ type Listener = () => void
 
 let snapshot: PlayerSnapshot = {
   queue: [],
+  priorityQueue: [],
   index: -1,
   currentTrack: null,
   isPlaying: false,
@@ -352,11 +380,19 @@ if (typeof window !== 'undefined') {
   })
 }
 
-async function startAt(index: number): Promise<void> {
-  const track = snapshot.queue[index] ?? null
+/**
+ * Single playback entry point. `nextIndex === null` means "play this track
+ * WITHOUT touching the context position" — that is exactly the priority tier
+ * contract: the album keeps its pointer, only the audio changes.
+ */
+async function startTrack(track: PlayerTrack | null, nextIndex: number | null): Promise<void> {
   if (!track) return
   startPlaySession(track)
-  set({ index, currentTrack: track, currentTime: 0, duration: track.duration_secs, currentLyrics: [] })
+  if (nextIndex === null) {
+    set({ currentTrack: track, currentTime: 0, duration: track.duration_secs, currentLyrics: [] })
+  } else {
+    set({ index: nextIndex, currentTrack: track, currentTime: 0, duration: track.duration_secs, currentLyrics: [] })
+  }
   void loadLyricsForTrack(track)
   audioController.load(toAudioUrl(track.path))
   try {
@@ -372,6 +408,24 @@ async function startAt(index: number): Promise<void> {
     if (registerFailure(track, `play() rejected: ${err instanceof Error ? err.message : String(err)}`)) return
     void next(true)
   }
+}
+
+/** Play a CONTEXT row: this is the only call path that may move `index`. */
+function startAt(index: number): Promise<void> {
+  return startTrack(snapshot.queue[index] ?? null, index)
+}
+
+/**
+ * Shift the head off the priority tier and play it with the context pointer
+ * frozen in place. Returns false when the tier is empty, so callers fall
+ * through to normal context advancement. The shift happens BEFORE the async
+ * play() so a rapid double `next()` can never pop the same row twice.
+ */
+function takePriorityHead(): Promise<boolean> {
+  const head = snapshot.priorityQueue[0]
+  if (!head) return Promise.resolve(false)
+  set({ priorityQueue: snapshot.priorityQueue.slice(1) })
+  return startTrack(head, null).then(() => true)
 }
 
 function ensureWiring(): void {
@@ -399,6 +453,12 @@ function ensureWiring(): void {
     if (snapshot.mode === 'repeat-one') {
       audioController.seek(0)
       void audioController.play().catch(() => undefined)
+      return
+    }
+    // Priority tier wins over every context mode (shuffle / repeat-all alike):
+    // an explicit "Play Next" always plays before the album continues.
+    if (snapshot.priorityQueue.length > 0) {
+      void takePriorityHead()
       return
     }
     if (snapshot.mode === 'shuffle') {
@@ -458,9 +518,18 @@ export async function togglePlay(): Promise<void> {
   }
 }
 
+/**
+ * Playback stepper. The PRIORITY tier is always consulted first: while the user
+ * queue holds anything, `next()` (manual or auto) plays it with `index` frozen.
+ * Only once the tier is empty does the context album advance by one.
+ */
 export async function next(auto = false): Promise<void> {
   ensureWiring()
   if (!auto) resetFailures()
+  if (snapshot.priorityQueue.length > 0) {
+    await takePriorityHead()
+    return
+  }
   const { queue, index, mode } = snapshot
   if (queue.length === 0) return
   if (auto && mode === 'normal' && index + 1 >= queue.length) return
@@ -518,7 +587,8 @@ export function reorderQueue(newQueue: PlayerTrack[]): void {
 }
 
 /**
- * Commit a new queue ORDER (drag-and-drop / undo) given only track ids.
+ * Commit a new queue ORDER (drag-and-drop / undo) given only queue row ids
+ * (`queueItemId` — unique per slot, so duplicate library tracks reorder safely).
  * Existing track objects are preserved byte-for-byte — nothing is cloned or
  * re-fetched — ids missing from `order` are re-appended in place, and ids that
  * do not belong to the queue are ignored. Index re-derivation (and therefore
@@ -531,7 +601,7 @@ export function setQueueOrder(order: string[]): void {
 
   const indexById = new Map<string, number>()
   current.forEach((track, i) => {
-    const key = String(track.id)
+    const key = queueItemId(track)
     if (!indexById.has(key)) indexById.set(key, i)
   })
 
@@ -554,27 +624,105 @@ export function setQueueOrder(order: string[]): void {
 }
 
 /**
- * Slip `track` in right after the currently playing one (`index + 1`) — the
- * audio element, position, mode and isPlaying are all untouched, so the next
- * auto-advance simply picks the inserted track up. On an empty queue there is
- * nothing to interrupt, so the track just starts playing.
+ * Burst guard: two identical queue mutations inside QUEUE_BURST_MS collapse into
+ * one, so a double-fired menu click (or an impatient rapid re-click) can never
+ * splice 2-3 duplicate rows in a single gesture. Only ACCEPTED calls refresh the
+ * window, so a blocked call can never starve a later legitimate one.
+ */
+const QUEUE_BURST_MS = 300
+const lastQueueActionAt = new Map<string, number>()
+
+function isQueueBurst(action: 'playNext' | 'addToQueue', trackId: number): boolean {
+  const key = `${action}:${trackId}`
+  const now = Date.now()
+  const previous = lastQueueActionAt.get(key)
+  if (previous !== undefined && now - previous < QUEUE_BURST_MS) return true
+  lastQueueActionAt.set(key, now)
+  if (lastQueueActionAt.size > 64) {
+    const oldest = lastQueueActionAt.keys().next()
+    if (!oldest.done) lastQueueActionAt.delete(oldest.value)
+  }
+  return false
+}
+
+/**
+ * Detach every copy of `trackId` from the priority tier, returning the first
+ * one found (so a re-queued song is MOVED, never cloned) plus the survivors.
+ * The context queue is never read or written here — this is the only list the
+ * dual-tier mutations are allowed to touch.
+ */
+function extractPriorityCopies(
+  source: PlayerTrack[],
+  trackId: number
+): { rows: PlayerTrack[]; taken: PlayerTrack | null } {
+  const rows: PlayerTrack[] = []
+  let taken: PlayerTrack | null = null
+  for (const row of source) {
+    if (row.id === trackId) {
+      if (!taken) taken = row
+      continue
+    }
+    rows.push(row)
+  }
+  return { rows, taken }
+}
+
+/**
+ * "Play Next" — prepend to the PRIORITY tier. The context playlist
+ * (`queue`) and its `index` are left byte-for-byte untouched, so the album
+ * never scrambles, never loses a row and never renumbers itself.
+ *
+ * Deduplication: a song already sitting in the priority tier is MOVED to the
+ * front (its existing `queueId` is preserved so React never remounts the row)
+ * instead of being inserted twice. With no context queue at all there is no
+ * album to protect, so the track simply starts playing.
  */
 export function playNext(track: PlayerTrack): void {
   ensureWiring()
-  const { queue, index } = snapshot
-  if (queue.length === 0) {
+  if (isQueueBurst('playNext', track.id)) return
+  if (snapshot.queue.length === 0) {
     void playTracks([track], 0)
     return
   }
-  const nextQueue = queue.slice()
-  nextQueue.splice(Math.min(Math.max(index + 1, 0), nextQueue.length), 0, track)
-  set({ queue: nextQueue })
+  const { rows, taken } = extractPriorityCopies(snapshot.priorityQueue, track.id)
+  const item = taken ?? { ...track, queueId: nextQueueId() }
+  set({ priorityQueue: [item, ...rows] })
 }
 
-/** Append `track` to the very end of the queue — playback is untouched. */
+/**
+ * "Add to End of Queue" — append to the PRIORITY tier. No-op when the song is
+ * already the tail entry; otherwise an earlier copy is lifted and re-appended
+ * ONCE (no duplicates, no context mutation).
+ */
 export function addToQueue(track: PlayerTrack): void {
   ensureWiring()
-  set({ queue: [...snapshot.queue, track] })
+  if (isQueueBurst('addToQueue', track.id)) return
+  if (snapshot.queue.length === 0) {
+    void playTracks([track], 0)
+    return
+  }
+  const { rows, taken } = extractPriorityCopies(snapshot.priorityQueue, track.id)
+  const item = taken ?? { ...track, queueId: nextQueueId() }
+  set({ priorityQueue: [...rows, item] })
+}
+
+/**
+ * Drop one user-queued row by its priority-slot id (`queueItemId`). Playback
+ * and the context queue are untouched — this only edits the priority tier.
+ */
+export function removeFromPriorityQueue(queueId: string): void {
+  ensureWiring()
+  const rows = snapshot.priorityQueue
+  const at = rows.findIndex((t) => queueItemId(t) === queueId)
+  if (at < 0) return
+  set({ priorityQueue: rows.filter((_, i) => i !== at) })
+}
+
+/** Empty the user queue (context playlist keeps playing untouched). */
+export function clearPriorityQueue(): void {
+  ensureWiring()
+  if (snapshot.priorityQueue.length === 0) return
+  set({ priorityQueue: [] })
 }
 
 export function setVolume(volume: number): void {
@@ -639,6 +787,7 @@ export function clearQueue(): void {
   resetFailures()
   set({
     queue: [],
+    priorityQueue: [],
     index: -1,
     currentTrack: null,
     isPlaying: false,
@@ -660,6 +809,8 @@ usePlayerStore.getState = () => ({
   setQueue,
   playNext,
   addToQueue,
+  removeFromPriorityQueue,
+  clearPriorityQueue,
   reorderQueue,
   setQueueOrder,
   playTracks,
