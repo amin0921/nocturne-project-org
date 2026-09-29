@@ -5,9 +5,10 @@ mod db;
 mod scanner;
 
 use commands::{
-    clear_library, delete_cached_lyrics, delete_track, get_listening_stats, get_lyric_offset,
-    get_lyrics, get_tracks, import_audio_files, open_music_folder, pick_audio_files, pick_folder,
-    record_play, reveal_in_explorer, save_cached_lyrics, scan_folder, set_lyric_offset,
+    clear_library, deduplicate_library, delete_cached_lyrics, delete_track, get_listening_stats,
+    get_lyric_offset, get_lyrics, get_tracks, import_audio_files, ingest_paths, open_music_folder,
+    pick_audio_files, pick_folder, record_play, reveal_in_explorer, save_cached_lyrics, scan_folder,
+    set_lyric_offset,
 };
 use db::{open_db, DbState};
 use std::sync::Mutex;
@@ -65,11 +66,84 @@ fn macos_app_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tau
     Menu::with_items(app, &[&app_menu, &edit_menu, &window_menu])
 }
 
+/// Graceful shutdown: flush SQLite, then terminate the process.
+///
+/// ── THIS FUNCTION IS THE SINGLE CLOSE/QUIT SEAM ──
+/// Every exit path funnels through here: the custom titlebar X, Alt+F4, the
+/// taskbar context menu, and (macOS) the Window ▸ Close Window (⌘W) menu item,
+/// all via the `on_window_event` hook in `main`. If a Tray icon or a
+/// "minimize to tray" behaviour is ever adopted, "close hides instead of quits"
+/// is a change to THIS function body only — the hook, the ACL, and the frontend
+/// close handler all stay as they are. No rework required.
+///
+/// WHY THIS EXISTS — the app owns TWO windows: `main` and `mini-island`, which is
+/// declared in tauri.conf.json (created hidden, never destroyed, only shown /
+/// hidden). The Tauri event loop only ends when the LAST window is closed, so
+/// closing `main` left `mini-island` alive and the `Nocturne` process running
+/// indefinitely (measured: still resident 15s after close, ~29MB / 16 threads).
+/// Relaunching then did nothing visible, because `tauri-plugin-single-instance`
+/// handed the new launch to the orphan.
+///
+/// `AppHandle::exit(0)` (not `std::process::exit(0)`) is deliberate: it runs
+/// Tauri's normal shutdown path and event cleanup. `process::exit` would skip
+/// destructors, including the `rusqlite::Connection` drop, leaving a WAL to
+/// recover on next launch.
+fn graceful_shutdown(app: &tauri::AppHandle) {
+    // Best-effort WAL checkpoint so the next launch starts from a truncated WAL
+    // instead of replaying it.
+    //
+    // `try_lock` is load-bearing, not defensive: `scan_folder_into_db_full`
+    // holds this same Mutex for the whole recursive walk
+    // (scanner.rs::scan_folder_into_db_full), so a blocking `lock()` here would
+    // hang the process forever whenever the user quit mid-scan — trading a leak
+    // bug for a worse hang bug. If a scan is in flight we skip the checkpoint
+    // and exit anyway; SQLite recovers an uncheckpointed WAL on next open, so
+    // exiting without it is still correct and never corrupts the database.
+    if let Some(state) = app.try_state::<DbState>() {
+        if let Ok(conn) = state.0.try_lock() {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        }
+    }
+    app.exit(0);
+}
+
 fn main() {
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
+        // A second launch must SURFACE the already-running app, not silently do
+        // nothing. This is the safety net for any future orphan process (a crash,
+        // a force-kill, a WMI kill): the user double-clicks the icon and the
+        // app comes back, instead of the launch appearing to do nothing at all.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                // Best-effort, in the order a user expects: restore a minimized
+                // window first, then unhide, then take focus. Each call is
+                // independent — one failing must not skip the next.
+                let _ = win.unminimize();
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(DbState(Mutex::new(rusqlite::Connection::open_in_memory().expect("mem db"))))
+        // A closed main window means the user is done with the app, so shut the
+        // whole process down rather than leaving the hidden mini-island running.
+        // Scoped to `main`: the mini-island is an implementation detail of the
+        // main window's life and must never own the app lifecycle.
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                // `close()` is intentional on the frontend, not `destroy()`:
+                // destroy() force-tears the window down and would skip this
+                // CloseRequested entirely, defeating the graceful path.
+                tauri::WindowEvent::CloseRequested { .. }
+                // Safety net for a close that somehow skipped CloseRequested;
+                // without it, a destroyed `main` would still orphan the process.
+                | tauri::WindowEvent::Destroyed => graceful_shutdown(window.app_handle()),
+                _ => {}
+            }
+        })
         .setup(|app| {
             let conn = open_db(&app.handle())?;
             let state = app.state::<DbState>();
@@ -89,10 +163,12 @@ fn main() {
             pick_folder,
             pick_audio_files,
             import_audio_files,
+            ingest_paths,
             scan_folder,
             get_tracks,
             delete_track,
             clear_library,
+            deduplicate_library,
             get_lyrics,
             save_cached_lyrics,
             delete_cached_lyrics,
