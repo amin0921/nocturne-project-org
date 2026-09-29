@@ -3,12 +3,19 @@ import { Copy, FolderOpen, ListMusic, ListPlus } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
 import { addToQueue, playNext, type PlayerTrack } from '../stores/usePlayerStore'
 import { cn } from '../lib/utils'
+import { IS_MACOS } from '../lib/platform'
 
 export interface TrackContextMenuProps {
   track: PlayerTrack | null
   position: { x: number; y: number } | null
   onClose: () => void
 }
+
+/**
+ * OS file-manager name. "Explorer" is the Windows shell; macOS calls it Finder.
+ * The non-macOS branch returns the exact string Windows has always displayed.
+ */
+const REVEAL_LABEL = IS_MACOS ? 'Show in Finder' : 'Show in Explorer'
 
 /** Assumed footprint used for viewport clamping (menu never clips off-screen). */
 const MENU_WIDTH = 210
@@ -43,7 +50,7 @@ const ACTIONS: TrackAction[] = [
   },
   {
     key: 'reveal',
-    label: 'Show in Explorer',
+    label: REVEAL_LABEL,
     icon: <FolderOpen size={15} aria-hidden />,
     run: (track) =>
       invoke('reveal_in_explorer', { path: track.path }).catch((err) =>

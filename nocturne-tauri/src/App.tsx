@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { emit, listen } from '@tauri-apps/api/event'
-import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window'
+import { currentMonitor, getCurrentWindow, monitorFromPoint } from '@tauri-apps/api/window'
 import { LogicalPosition, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { Copy, Disc3, FileAudio, Minus, Square, Trash2, X } from 'lucide-react'
@@ -15,6 +15,7 @@ import QueueSheet from './components/QueueSheet'
 import TrackContextMenu from './components/TrackContextMenu'
 import EqBars from './components/EqBars'
 import ErrorBoundary from './components/ErrorBoundary'
+import { MINI_TOP_DOCK_Y } from './components/MiniIsland/magneticSnap'
 import { AlertDialog } from './components/ui/alert-dialog'
 import { DataTable, type DataColumn } from './components/ui/data-table'
 import { SearchInput } from './components/ui/search-input'
@@ -39,6 +40,7 @@ import {
 } from './stores/usePlayerStore'
 import { CommandPalette } from './components/command-palette'
 import { cn, formatTime } from './lib/utils'
+import { IS_MACOS } from './lib/platform'
 import { useStudioHotkeys } from './hooks/useStudioHotkeys'
 import {
   MINI_PINNED_STORAGE_KEY,
@@ -168,15 +170,35 @@ export default function App(): JSX.Element {
             await mini.setPosition(new PhysicalPosition(stored.x, stored.y))
           } else {
             // DPI-aware top-center anchor. screen.width is CSS-pixel/DPI-unaware
-            // and drifts under Windows display scaling — use the active window's
-            // monitor geometry instead: physical width / scaleFactor = logical px.
-            // x centers the 360px window; y docks 16px below the top edge.
-            const monitor = await currentMonitor()
+            // and drifts under display scaling — use the active display's monitor
+            // geometry instead: physical width / scaleFactor = logical px.
+            //
+            // Resolve the DISPLAY THE MAIN WINDOW IS ON, not the one under the
+            // cursor. The bare `currentMonitor()` returns the cursor's display,
+            // so on a multi-monitor setup the island could land on a screen the
+            // app is not even on. `@tauri-apps/api` 2.11 has no
+            // `Window.currentMonitor()`, so the equivalent is `monitorFromPoint`
+            // on the window's own centre.
+            //
+            // A minimized window's outer position can be stale or off-screen, so
+            // in that case — and if the point resolves to nothing — fall back to
+            // the original cursor-monitor lookup rather than guessing.
+            let monitor = null
+            if (!minimized) {
+              const [pos, size] = await Promise.all([
+                win.outerPosition(),
+                win.outerSize()
+              ])
+              monitor = await monitorFromPoint(pos.x + size.width / 2, pos.y + size.height / 2)
+            }
+            if (!monitor) monitor = await currentMonitor()
             const logicalWidth = monitor
               ? monitor.size.width / monitor.scaleFactor
               : window.screen.width
             const x = Math.max(0, Math.round((logicalWidth - 360) / 2))
-            await mini.setPosition(new LogicalPosition(x, 16))
+            // y is the top-edge dock offset: 16 on Windows (unchanged), 40 on
+            // macOS so the 130px island clears the menu bar and the camera notch.
+            await mini.setPosition(new LogicalPosition(x, MINI_TOP_DOCK_Y))
           }
           await mini.show()
           // focus:false at creation — claim focus on appearance so the mini's
@@ -229,8 +251,8 @@ export default function App(): JSX.Element {
   // Global keyboard shortcuts:
   // - Ctrl+K / Cmd+K: Toggle Command Palette
   // - / or ?: Open Shortcut Atlas (no Shift required; when not typing)
-  // - Ctrl+1: Stage View
-  // - Ctrl+2: Library View
+  // - Ctrl+1 / Cmd+1: Stage View
+  // - Ctrl+2 / Cmd+2: Library View
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
@@ -260,13 +282,13 @@ export default function App(): JSX.Element {
         return
       }
 
-      if (e.ctrlKey && e.key === '1') {
+      if ((e.ctrlKey || e.metaKey) && e.key === '1') {
         e.preventDefault()
         setView('stage')
-      } else if (e.ctrlKey && e.key === '2') {
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '2') {
         e.preventDefault()
         setView('library')
-      } else if (e.ctrlKey && e.key === '3') {
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '3') {
         e.preventDefault()
         setView('stats')
       }
@@ -740,7 +762,16 @@ export default function App(): JSX.Element {
 
   return (
     <ErrorBoundary fallbackTitle="Nocturne Application Error" onReset={() => void reload()}>
-      <div className={cn('nocturne-shell text-ink select-none relative', isMaximized && 'is-maximized')}>
+      <div
+        className={cn(
+          'nocturne-shell text-ink select-none relative',
+          // `.is-maximized` is a Windows-only compensation: frameless maximize
+          // on Windows 10/11 leaves the content inset from the frame, so the
+          // rule bumps the shell padding from 1rem to 1.5rem. macOS has no such
+          // offset, so the class is withheld there and the base padding applies.
+          isMaximized && !IS_MACOS && 'is-maximized'
+        )}
+      >
         {/* Floating Window Controls in top-right */}
         {!cinemaOpen && (
           <div

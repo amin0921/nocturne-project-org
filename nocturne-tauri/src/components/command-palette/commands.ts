@@ -1,3 +1,5 @@
+import { modKey } from '../../lib/platform'
+
 export type CommandCategory = 'transport' | 'playback' | 'navigation' | 'view' | 'window' | 'help'
 
 export interface CommandItem {
@@ -124,7 +126,7 @@ export const STUDIO_COMMANDS: CommandItem[] = [
     title: 'Go to Stage View',
     category: 'navigation',
     categoryLabel: 'Navigation',
-    shortcut: ['Ctrl', '1'],
+    shortcut: [modKey(), '1'],
     icon: 'Disc3',
     keywords: ['stage', 'player', 'view', 'home', 'vinyl'],
     actionId: 'go-stage'
@@ -134,7 +136,7 @@ export const STUDIO_COMMANDS: CommandItem[] = [
     title: 'Go to Library View',
     category: 'navigation',
     categoryLabel: 'Navigation',
-    shortcut: ['Ctrl', '2'],
+    shortcut: [modKey(), '2'],
     icon: 'Library',
     keywords: ['library', 'tracks', 'songs', 'list', 'archive'],
     actionId: 'go-library'
@@ -144,7 +146,7 @@ export const STUDIO_COMMANDS: CommandItem[] = [
     title: 'آمار شنیداری / Listening Stats',
     category: 'navigation',
     categoryLabel: 'Navigation',
-    shortcut: ['Ctrl', '3'],
+    shortcut: [modKey(), '3'],
     icon: 'BarChart3',
     keywords: ['stats', 'listening', 'charts', 'analytics', 'آمار', 'wrapped', 'replay'],
     actionId: 'go-stats'
@@ -254,17 +256,17 @@ export const SHORTCUT_ATLAS_GROUPS: AtlasGroup[] = [
     items: [
       {
         title: 'Stage View',
-        shortcut: ['Ctrl', '1'],
+        shortcut: [modKey(), '1'],
         description: 'Return to the main stage and vinyl view'
       },
       {
         title: 'Library View',
-        shortcut: ['Ctrl', '2'],
+        shortcut: [modKey(), '2'],
         description: 'Browse all tracks and search the library'
       },
       {
         title: 'Listening Stats',
-        shortcut: ['Ctrl', '3'],
+        shortcut: [modKey(), '3'],
         description: 'View offline listening stats dashboard'
       },
       {
@@ -295,7 +297,7 @@ export const SHORTCUT_ATLAS_GROUPS: AtlasGroup[] = [
     items: [
       {
         title: 'Command Palette',
-        shortcut: ['Ctrl', 'K'],
+        shortcut: [modKey(), 'K'],
         description: 'Quick keyboard access to every studio command'
       },
       {

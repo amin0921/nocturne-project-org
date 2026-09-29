@@ -442,8 +442,10 @@ body::-webkit-scrollbar,
   transition: none !important;
 }
 
+/* WINDOWS ONLY — the class is withheld on macOS by App.tsx.
+   Compensate the Windows 10/11 frameless maximize offset. macOS has no such
+   offset, so applying this there would inset the layout for no reason. */
 .nocturne-shell.is-maximized {
-  /* Compensate for Windows 10/11 frameless maximize offset */
   padding: 1.5rem !important;
   height: 100vh !important;
   width: 100vw !important;

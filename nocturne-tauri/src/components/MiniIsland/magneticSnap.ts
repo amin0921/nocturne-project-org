@@ -1,16 +1,42 @@
 import { currentMonitor, getCurrentWindow, LogicalPosition } from '@tauri-apps/api/window'
+import { IS_MACOS } from '../../lib/platform'
 
 export const MINI_WINDOW_WIDTH = 360
 export const MINI_WINDOW_HEIGHT = 130
 
-const TOP_SNAP_ZONE_Y = 48
+/**
+ * Placement constants, branched per platform.
+ *
+ * The `false` branch is the literal set the Windows build shipped with and is
+ * untouched. macOS needs different numbers for two structural reasons:
+ *
+ *  - TOP_DOCK_Y / TOP_SNAP_ZONE_Y: the macOS menu bar occupies the top ~24pt
+ *    of every display, and MacBooks add a camera notch below it. Docking the
+ *    130px island at y=16 puts it under the menu bar and the notch, so macOS
+ *    docks lower and gets a taller snap zone to compensate.
+ *
+ *  - TASKBAR_RESERVE: the Windows taskbar is ~40px, which is what the constant
+ *    encoded. The macOS Dock is ~70px, so reusing 40 would let the island settle
+ *    underneath it. macOS uses 0 instead and relies purely on `workAreaBottom`,
+ *    because winit reports `visibleFrame` on macOS — which already excludes both
+ *    the menu bar and the Dock, whatever their current size. That also stays
+ *    correct when the Dock is set to auto-hide and the work area is full-height.
+ */
+const TOP_SNAP_ZONE_Y = IS_MACOS ? 72 : 48
 const TOP_CENTER_TOLERANCE_X = 140
-const TOP_DOCK_Y = 16
+const TOP_DOCK_Y = IS_MACOS ? 40 : 16
 const EDGE_SNAP_ZONE_X = 40
 const EDGE_MARGIN = 16
-const TASKBAR_RESERVE = 40
+const TASKBAR_RESERVE = IS_MACOS ? 0 : 40
 const GLIDE_DURATION_MS = 130
 const GLIDE_STEPS = 4
+
+/**
+ * Y offset used when docking the island to the top-center of a display, in
+ * logical px. Shared with App.tsx so the initial placement and the magnetic snap
+ * always agree — 16 on Windows, 40 on macOS.
+ */
+export const MINI_TOP_DOCK_Y = TOP_DOCK_Y
 
 export interface SnapPoint {
   x: number

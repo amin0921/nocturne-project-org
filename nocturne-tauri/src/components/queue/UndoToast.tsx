@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Undo2, X } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { modKey } from '../../lib/platform'
 
 /**
  * UndoToast — floating obsidian-glass toast anchored in the queue panel.
@@ -155,7 +156,7 @@ export const UndoToast = React.memo(function UndoToast({
           <Undo2 size={13} strokeWidth={2.2} aria-hidden />
           <span>Undo</span>
           <kbd className="text-[10px] text-white/50 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded font-mono">
-            Ctrl+Z
+            {modKey()}+Z
           </kbd>
         </button>
         <button

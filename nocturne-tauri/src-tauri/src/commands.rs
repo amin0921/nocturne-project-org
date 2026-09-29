@@ -259,9 +259,18 @@ const REVEAL_EXTS: &[&str] = &["mp3", "wav", "m4a", "aac"];
 /// Validates a path before it can reach the OS: rejects empty/`..` escapes,
 /// canonicalizes to an existing audio file, and requires the path to be
 /// catalogued in `tracks` (the library allowlist). Returns the normalized
-/// display path that Windows Explorer should be handed.
+/// display path that the OS should be handed.
+///
+/// Separator normalization is Windows-only. A stored Windows path is always
+/// backslash-separated, so a forward-slash form arriving from the webview has to
+/// be rewritten to match the `file_path` column. On macOS every absolute path
+/// already begins with `/`, and rewriting those slashes to backslashes would
+/// destroy the path outright, so the raw value is used unchanged there.
 fn validate_reveal_path(conn: &rusqlite::Connection, raw: &str) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
     let clean = raw.replace('/', "\\");
+    #[cfg(not(target_os = "windows"))]
+    let clean = raw.to_string();
     if clean.trim().is_empty() || clean.contains("..") {
         return Err("invalid path".to_string());
     }
@@ -293,9 +302,14 @@ fn validate_reveal_path(conn: &rusqlite::Connection, raw: &str) -> Result<String
     Ok(clean)
 }
 
-/// Highlights a library audio file in a native Windows Explorer window
-/// (`explorer /select,`). The webview only ever passes a DB-catalogued track
-/// path; validation happens in Rust so the OS is never pointed anywhere else.
+/// Reveals a library audio file in the OS file manager and highlights it.
+///
+/// The webview only ever passes a DB-catalogued track path; validation happens
+/// in Rust so the OS is never pointed anywhere else.
+/// - Windows: `explorer /select,`
+/// - macOS:   `open -R` (reveals in Finder with the file selected)
+///
+/// The Windows arm is byte-identical to the original implementation.
 #[tauri::command]
 pub fn reveal_in_explorer(state: State<DbState>, path: String) -> Result<(), String> {
     let clean_path = {
@@ -312,10 +326,19 @@ pub fn reveal_in_explorer(state: State<DbState>, path: String) -> Result<(), Str
             .map_err(|e| e.to_string())?;
         Ok(())
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        Command::new("open")
+            .args(["-R", &clean_path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = clean_path;
-        Err("Only supported on Windows".into())
+        Err("Only supported on Windows and macOS".into())
     }
 }
 

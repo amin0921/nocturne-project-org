@@ -2,11 +2,12 @@ import React from 'react'
 import { BarChart3, LayoutDashboard, Table2 } from 'lucide-react'
 import { useUIStore, type ViewMode } from '../stores/useUIStore'
 import { cn } from '../lib/utils'
+import { modKey } from '../lib/platform'
 
 const OPTIONS: { id: ViewMode; label: string; icon: typeof LayoutDashboard; hint: string }[] = [
-  { id: 'stage', label: 'Stage', icon: LayoutDashboard, hint: 'Cinematic stage view (Ctrl+1)' },
-  { id: 'library', label: 'Library', icon: Table2, hint: 'Full library table (Ctrl+2)' },
-  { id: 'stats', label: 'Stats', icon: BarChart3, hint: 'Listening stats (Ctrl+3)' }
+  { id: 'stage', label: 'Stage', icon: LayoutDashboard, hint: `Cinematic stage view (${modKey()}+1)` },
+  { id: 'library', label: 'Library', icon: Table2, hint: `Full library table (${modKey()}+2)` },
+  { id: 'stats', label: 'Stats', icon: BarChart3, hint: `Listening stats (${modKey()}+3)` }
 ]
 
 export function ViewToggle({ className }: { className?: string }): JSX.Element {

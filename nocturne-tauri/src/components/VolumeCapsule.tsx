@@ -2,6 +2,10 @@ import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { Volume1, Volume2, VolumeX } from 'lucide-react'
 import { setVolume, toggleMute, usePlayerStore } from '../stores/usePlayerStore'
 import { cn } from '../lib/utils'
+import { normalizeWheelStep } from '../lib/wheel'
+
+/** Wheel step per notch. Unchanged for Windows; macOS scales this by magnitude. */
+const VOLUME_WHEEL_STEP = 5
 
 export interface VolumeCapsuleProps {
   className?: string
@@ -51,7 +55,11 @@ export function VolumeCapsule({ className }: VolumeCapsuleProps): JSX.Element {
     const el = capsuleRef.current
     if (!el) return
 
+    let lastWheelAt = 0
     const onWheel = (e: WheelEvent) => {
+      // macOS reports a trackpad pinch-zoom as ctrl+wheel. Never swallow it —
+      // pinch-zoom must still zoom, exactly as anywhere else in the app.
+      if (e.ctrlKey) return
       e.preventDefault()
       e.stopPropagation()
 
@@ -59,11 +67,15 @@ export function VolumeCapsule({ className }: VolumeCapsuleProps): JSX.Element {
       if (wheelTimerRef.current) clearTimeout(wheelTimerRef.current)
       wheelTimerRef.current = setTimeout(() => setIsInteracting(false), 900)
 
-      const step = 5
-      const delta = e.deltaY < 0 ? step : -step
+      // normalizeWheelStep returns the original flat ±5 per event for every
+      // Windows wheel event, so Windows volume feel is unchanged. macOS scales
+      // by the trackpad's reported magnitude and damps the momentum tail.
+      const { step } = normalizeWheelStep(e, VOLUME_WHEEL_STEP, lastWheelAt)
+      lastWheelAt = performance.now()
+
       const storeState = usePlayerStore.getState()
       const current = storeState.isMuted ? 0 : storeState.volume
-      const nextVol = Math.min(100, Math.max(0, current + delta))
+      const nextVol = Math.min(100, Math.max(0, current + step))
       setVolume(nextVol)
     }
 

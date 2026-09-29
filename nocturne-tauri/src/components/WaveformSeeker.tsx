@@ -2,10 +2,14 @@ import React, { useId, useRef, useState, useCallback, useEffect, useMemo } from 
 import { formatTime, type LyricLine } from '../types/player'
 import { cn } from '../lib/utils'
 import { usePlayerStore } from '../stores/usePlayerStore'
+import { normalizeWheelStep } from '../lib/wheel'
 
 const VIEW_W = 600
 const VIEW_H = 44
 const BAR_COUNT = 72
+
+/** Wheel step per notch. Unchanged for Windows; macOS scales this by magnitude. */
+const WHEEL_STEP_SECONDS = 2
 
 /**
  * Binary search for the matching active lyric line.
@@ -161,15 +165,21 @@ export function WaveformSeeker({
   // Tactile wheel scrubbing: ±2s per notch over the scrubber. Bound with
   // { passive: false } so preventDefault actually suppresses page scroll
   // (React's synthetic onWheel is passive in Chromium and cannot).
+  //
+  // normalizeWheelStep returns the original ±2s constant for every Windows
+  // wheel event, so the Windows feel is unchanged. macOS additionally scales
+  // the step by the trackpad's reported magnitude and damps the momentum tail.
   useEffect(() => {
     const el = sliderRef.current
     if (!el) return
+    let lastWheelAt = 0
     const onWheel = (e: WheelEvent): void => {
       e.preventDefault()
       const { currentTime: t, duration: d, onSeek: seek } = liveRef.current
       if (!d || d <= 0) return
-      const delta = e.deltaY < 0 ? 2 : -2
-      const target = Math.min(d, Math.max(0, t + delta))
+      const { step } = normalizeWheelStep(e, WHEEL_STEP_SECONDS, lastWheelAt)
+      lastWheelAt = performance.now()
+      const target = Math.min(d, Math.max(0, t + step))
       seek(target / d)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
