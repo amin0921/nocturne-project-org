@@ -1,0 +1,41 @@
+# با این فایل، گیت‌هاب خودش نسخه مک Nocturne رو می‌سازه.
+# اجرا: تب Actions در گیت‌هاب ← «Build Nocturne for Mac» ← دکمه Run workflow
+# خروجی: فایل .dmg (نصب‌کننده مک) در بخش Artifacts همون صفحه
+
+name: Build Nocturne for Mac
+
+on:
+  workflow_dispatch: # اجرای دستی با دکمه، بدون نیاز به دستور خاص
+
+jobs:
+  build-mac:
+    runs-on: macos-latest # ماشین مک رایگان گیت‌هاب (اپل سیلیکون)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: nocturne-tauri/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        working-directory: nocturne-tauri
+        run: npm ci
+
+      - name: Build the Tauri app
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: nocturne-tauri
+
+      - name: Upload the Mac installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nocturne-macOS
+          path: nocturne-tauri/src-tauri/target/release/bundle/dmg/*.dmg
