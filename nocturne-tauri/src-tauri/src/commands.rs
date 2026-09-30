@@ -5,7 +5,24 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::db::DbState;
-use crate::scanner::{import_files_into_db, scan_folder_into_db_with_covers};
+use crate::scanner::{import_files_into_db, scan_folder_into_db_full, ImportOutcome};
+
+/// Ingestion result for the webview: how many rows were added, and how many
+/// files were recognised as already-present elsewhere in the library.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportResultDto {
+    /// Newly indexed tracks.
+    pub inserted: usize,
+    /// Files skipped because the same song is already in the library.
+    pub skipped: usize,
+}
+
+impl From<ImportOutcome> for ImportResultDto {
+    fn from(o: ImportOutcome) -> Self {
+        ImportResultDto { inserted: o.inserted, skipped: o.skipped }
+    }
+}
 
 #[derive(serde::Serialize)]
 pub struct TrackDto {
@@ -37,15 +54,82 @@ pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
-/// Recursively scans a selected folder into the SQLite database with progress events.
-#[tauri::command]
-pub async fn scan_folder(app: AppHandle, path: String) -> Result<usize, String> {
-    let selected = PathBuf::from(path);
-    // Canonicalize: resolves symlinks, normalizes `..`, anchors the allowlist root.
-    let root = selected.canonicalize().map_err(|e| e.to_string())?;
-    if !root.is_dir() {
-        return Err("Selected path is not a folder".to_string());
+/// Audio extension allowlist for the folder-picking dialog — mirrors
+/// `scanner::SUPPORTED_EXTS` so the picker opens with audio tracks visible.
+const PICK_FOLDER_EXTS: &[&str] = &["mp3", "wav", "m4a", "aac"];
+
+/// Resolves the ingest root for the "Add Folder" flow.
+///
+/// The Windows folder picker (IFileDialog with FOS_PICKFOLDERS) hides every
+/// file, which makes a music folder look empty. The approved UX instead opens
+/// a *file* dialog filtered to audio: the user sees the supported tracks and
+/// picks any one of them, and its canonical parent folder becomes the scan
+/// root. A real directory (e.g. from drag-and-drop or future callers) still
+/// works and is used as-is.
+///
+/// Validation is strict, in Rust only: `..` escapes are rejected, the path is
+/// canonicalized, and the picked file must carry a supported audio extension.
+pub fn resolve_folder_root(raw: &str) -> Result<PathBuf, String> {
+    let clean = raw.trim().to_string();
+    if clean.is_empty() || clean.contains("..") {
+        return Err("invalid path".to_string());
     }
+    let canonical = PathBuf::from(&clean)
+        .canonicalize()
+        .map_err(|e| format!("Path not found ({e})"))?;
+    if canonical.is_dir() {
+        return Ok(canonical);
+    }
+    if !canonical.is_file() {
+        return Err("Selected path is not a folder or an audio file".to_string());
+    }
+    let ext = canonical
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !PICK_FOLDER_EXTS.contains(&ext.as_str()) {
+        return Err("Not a supported audio file".to_string());
+    }
+    let parent = canonical
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "Selected file has no parent folder".to_string())?;
+    Ok(parent)
+}
+
+/// Native audio file picker for the "Add Folder" button.
+///
+/// Windows' folder-only dialog cannot display files, so the approved UX is:
+/// show the supported audio tracks (.mp3/.wav/.m4a/.aac) and let the user pick
+/// any single one — its containing folder is then scanned recursively, exactly
+/// as `pick_folder` + `scan_folder` did before. Returns None if user cancels.
+#[tauri::command]
+pub async fn pick_folder_via_file(app: AppHandle) -> Result<Option<String>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Select your music folder (choose any audio file inside it)")
+        .add_filter("Audio Files", PICK_FOLDER_EXTS)
+        .add_filter("All Files", &["*"])
+        .blocking_pick_file();
+    let Some(file_path) = picked else {
+        return Ok(None);
+    };
+    let path = file_path.into_path().map_err(|e| e.to_string())?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+/// Recursively scans a selected folder into the SQLite database with progress events.
+/// Runs on a blocking worker thread; reports inserted vs. deduplicated-skip counts.
+///
+/// `path` may be a directory or a single supported audio file inside the target
+/// folder (the "Add Folder" file-picker flow): `resolve_folder_root` validates
+/// and resolves the canonical scan root in Rust either way.
+#[tauri::command]
+pub async fn scan_folder(app: AppHandle, path: String) -> Result<ImportResultDto, String> {
+    // Canonicalize + validate + parent-resolve: all in Rust, never the webview.
+    let root = resolve_folder_root(&path)?;
 
     let _ = app.emit("scan-start", ());
 
@@ -59,7 +143,7 @@ pub async fn scan_folder(app: AppHandle, path: String) -> Result<usize, String> 
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DbState>();
         let emitter = app.clone();
-        scan_folder_into_db_with_covers(
+        scan_folder_into_db_full(
             &state,
             &root,
             Some(&covers_dir),
@@ -73,32 +157,51 @@ pub async fn scan_folder(app: AppHandle, path: String) -> Result<usize, String> 
     })
     .await
     .map_err(|e| e.to_string())?
+    .map(ImportResultDto::from)
 }
 
 /// Native folder picker → recursive scan → SQLite persist.
-/// Returns None if user cancels dialog, or Some(count) of imported tracks.
+/// Returns None if user cancels dialog, or the import result.
 #[tauri::command]
-pub async fn open_music_folder(app: AppHandle) -> Result<Option<usize>, String> {
+pub async fn open_music_folder(app: AppHandle) -> Result<Option<ImportResultDto>, String> {
     let picked = pick_folder(app.clone()).await?;
     let Some(folder) = picked else {
         return Ok(None);
     };
-    let count = scan_folder(app, folder).await?;
-    Ok(Some(count))
+    let result = scan_folder(app, folder).await?;
+    Ok(Some(result))
+}
+
+/// "Add Folder" end-to-end: audio-file picker (files visible) → resolve the
+/// picked file's parent folder → recursive scan → SQLite persist. Returns None
+/// if user cancels the dialog, or the import result.
+#[tauri::command]
+pub async fn open_music_folder_via_file(app: AppHandle) -> Result<Option<ImportResultDto>, String> {
+    let picked = pick_folder_via_file(app.clone()).await?;
+    let Some(picked_path) = picked else {
+        return Ok(None);
+    };
+    let folder = resolve_folder_root(&picked_path)?;
+    let result = scan_folder(app, folder.to_string_lossy().to_string()).await?;
+    Ok(Some(result))
 }
 
 /// Native multi-select audio file picker for the "Add Files" button.
 /// Unlike the folder picker, files are visible in the Windows dialog, so users
 /// can see names/sizes and pick one or many tracks directly.
-/// Filter mirrors `scanner::SUPPORTED_EXTS` (mp3 / wav / m4a / aac) — only
-/// formats the library can actually index.
-/// Returns None when the user cancels.
+///
+/// The first filter mirrors `scanner::SUPPORTED_EXTS` (mp3 / wav / m4a / aac) so
+/// the dialog opens on audio only. A second "All files" filter is offered as an
+/// escape hatch: directory enumeration is what stalls on very large folders, and
+/// a user who hits that can widen the view instead of waiting. Only the second
+/// filter shows non-audio files, and the Rust side still rejects them.
 #[tauri::command]
 pub async fn pick_audio_files(app: AppHandle) -> Result<Option<Vec<String>>, String> {
     let picked = app
         .dialog()
         .file()
         .add_filter("Audio Files", &["mp3", "wav", "m4a", "aac"])
+        .add_filter("All Files", &["*"])
         .blocking_pick_files();
     let Some(paths) = picked else {
         return Ok(None);
@@ -113,13 +216,16 @@ pub async fn pick_audio_files(app: AppHandle) -> Result<Option<Vec<String>>, Str
 }
 
 /// Reads metadata for explicitly selected audio files and inserts new tracks
-/// into SQLite. Returns the count of newly imported tracks.
+/// into SQLite. Returns inserted and deduplicated-skip counts.
 /// Path validation, tag reads and DB writes happen in Rust only (spawn_blocking
 /// keeps them off the main thread); the webview never touches disk or SQL.
+///
+/// This is also the landing point for files dropped onto the window, so it must
+/// stay tolerant: unusable paths are skipped silently, never surfaced as errors.
 #[tauri::command]
-pub async fn import_audio_files(app: AppHandle, file_paths: Vec<String>) -> Result<usize, String> {
+pub async fn import_audio_files(app: AppHandle, file_paths: Vec<String>) -> Result<ImportResultDto, String> {
     if file_paths.is_empty() {
-        return Ok(0);
+        return Ok(ImportResultDto { inserted: 0, skipped: 0 });
     }
     let covers_dir = app
         .path()
@@ -135,6 +241,100 @@ pub async fn import_audio_files(app: AppHandle, file_paths: Vec<String>) -> Resu
     })
     .await
     .map_err(|e| e.to_string())?
+    .map(ImportResultDto::from)
+}
+
+/// Ingests a mixed set of OS paths -- the drag-and-drop entry point.
+///
+/// The webview cannot stat a path, so the folder/file split is made HERE, in
+/// Rust, where paths are canonicalized and validated exactly as they are for
+/// the dialog paths: `..` is rejected, the target must exist, and only real
+/// files reach the metadata reader. Each folder is scanned, then the loose files
+/// are imported; a failure on one item is logged and the rest still proceed, so
+/// one bad path in a multi-item drop cannot lose the whole drop.
+///
+/// Audio files on disk are never modified, only catalogued.
+#[tauri::command]
+pub async fn ingest_paths(app: AppHandle, paths: Vec<String>) -> Result<ImportResultDto, String> {
+    if paths.is_empty() {
+        return Ok(ImportResultDto { inserted: 0, skipped: 0 });
+    }
+
+    let mut folders: Vec<PathBuf> = Vec::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for raw in paths {
+        if raw.contains("..") {
+            continue;
+        }
+        let Ok(canonical) = PathBuf::from(&raw).canonicalize() else {
+            continue; // vanished or malformed: skip, never fail the whole drop
+        };
+        if canonical.is_dir() {
+            folders.push(canonical);
+        } else if canonical.is_file() {
+            files.push(canonical);
+        }
+    }
+    if folders.is_empty() && files.is_empty() {
+        return Ok(ImportResultDto { inserted: 0, skipped: 0 });
+    }
+
+    let covers_dir = app
+        .path()
+        .app_local_data_dir()
+        .map(|d| d.join("covers"))
+        .unwrap_or_else(|_| crate::scanner::default_covers_dir());
+    let _ = std::fs::create_dir_all(&covers_dir);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DbState>();
+        let mut inserted = 0usize;
+        let mut skipped = 0usize;
+        for folder in &folders {
+            match scan_folder_into_db_full(&state, folder, Some(&covers_dir), None) {
+                Ok(o) => {
+                    inserted += o.inserted;
+                    skipped += o.skipped;
+                }
+                Err(e) => eprintln!("[nocturne] dropped folder failed to scan: {e}"),
+            }
+        }
+        if !files.is_empty() {
+            match import_files_into_db(&state, &files, Some(&covers_dir)) {
+                Ok(o) => {
+                    inserted += o.inserted;
+                    skipped += o.skipped;
+                }
+                Err(e) => eprintln!("[nocturne] dropped files failed to import: {e}"),
+            }
+        }
+        Ok(ImportResultDto { inserted, skipped })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Purges content-duplicate track rows, keeping one survivor per song.
+/// Returns how many rows were removed.
+///
+/// Database records only: no audio file on disk is ever read, moved or deleted,
+/// so every survivor can be re-indexed by rescanning its folder. Unlike the
+/// one-shot startup migration this is NOT marker-gated, so it stays available as
+/// a manual "Remove duplicates" action for the life of the install.
+#[tauri::command]
+pub fn deduplicate_library(state: State<DbState>) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let outcome = crate::db::deduplicate_tracks(&conn)?;
+    if outcome.purged > 0 {
+        eprintln!(
+            "[nocturne] deduplicate_library: purged {} duplicate track row(s)",
+            outcome.purged
+        );
+        for path in &outcome.purged_paths {
+            eprintln!("[nocturne]   purged: {path}");
+        }
+    }
+    Ok(outcome.purged)
 }
 
 /// All catalogued tracks, newest first.
@@ -873,6 +1073,41 @@ mod tests {
             set_lyric_offset_impl(&conn, "range", offset).unwrap();
             assert_eq!(get_lyric_offset_impl(&conn, "range").unwrap(), offset);
         }
+    }
+
+    #[test]
+    fn resolve_folder_root_rejects_escape_empty_and_missing() {
+        assert!(resolve_folder_root("").is_err());
+        assert!(resolve_folder_root("   ").is_err());
+        assert!(resolve_folder_root("..\\..\\escape").is_err());
+        assert!(resolve_folder_root("C:\\definitely\\not\\there_xyz").is_err());
+    }
+
+    #[test]
+    fn resolve_folder_root_accepts_dir_and_audio_file_parent() {
+        let dir = std::env::temp_dir().join(format!("nocturne_test_root_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A directory passes through as the scan root.
+        assert_eq!(
+            resolve_folder_root(&dir.to_string_lossy()).unwrap(),
+            dir.canonicalize().unwrap()
+        );
+
+        // A supported audio file resolves to its canonical parent folder.
+        let file = dir.join("track.mp3");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(
+            resolve_folder_root(&file.to_string_lossy()).unwrap(),
+            dir.canonicalize().unwrap()
+        );
+
+        // A non-audio file is rejected, even if it exists.
+        let note = dir.join("note.txt");
+        std::fs::write(&note, b"x").unwrap();
+        assert!(resolve_folder_root(&note.to_string_lossy()).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

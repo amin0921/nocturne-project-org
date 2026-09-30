@@ -6,8 +6,9 @@ mod scanner;
 
 use commands::{
     clear_library, deduplicate_library, delete_cached_lyrics, delete_track, get_listening_stats,
-    get_lyric_offset, get_lyrics, get_tracks, import_audio_files, ingest_paths, open_music_folder,
-    pick_audio_files, pick_folder, record_play, reveal_in_explorer, save_cached_lyrics, scan_folder,
+    get_lyric_offset, get_lyrics, get_tracks, import_audio_files, ingest_paths,
+    open_music_folder, open_music_folder_via_file, pick_audio_files, pick_folder,
+    pick_folder_via_file, record_play, reveal_in_explorer, save_cached_lyrics, scan_folder,
     set_lyric_offset,
 };
 use db::{open_db, DbState};
@@ -76,13 +77,16 @@ fn macos_app_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tau
 /// is a change to THIS function body only — the hook, the ACL, and the frontend
 /// close handler all stay as they are. No rework required.
 ///
-/// WHY THIS EXISTS — the app owns TWO windows: `main` and `mini-island`, which is
-/// declared in tauri.conf.json (created hidden, never destroyed, only shown /
-/// hidden). The Tauri event loop only ends when the LAST window is closed, so
-/// closing `main` left `mini-island` alive and the `Nocturne` process running
-/// indefinitely (measured: still resident 15s after close, ~29MB / 16 threads).
-/// Relaunching then did nothing visible, because `tauri-plugin-single-instance`
-/// handed the new launch to the orphan.
+/// WHY THIS EXISTS — the app can own a SECOND window: `mini-island`. It is not
+/// declared in tauri.conf.json any more; the frontend creates it on demand when
+/// `main` is minimized and DESTROYS it on restore, so for most of a session
+/// `main` is the only window. Whenever a `mini-island` does exist it is
+/// always-on-top and focusable, so closing `main` can leave the event loop
+/// running against the mini alone (the Tauri event loop only ends when the LAST
+/// window is closed). Before the on-demand lifecycle this was permanent and
+/// reproducible: the process stayed resident (measured: still there 15s after
+/// close, ~29MB / 16 threads), and relaunching did nothing visible because
+/// `tauri-plugin-single-instance` handed the new launch to the orphan.
 ///
 /// `AppHandle::exit(0)` (not `std::process::exit(0)`) is deliberate: it runs
 /// Tauri's normal shutdown path and event cleanup. `process::exit` would skip
@@ -126,9 +130,11 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(DbState(Mutex::new(rusqlite::Connection::open_in_memory().expect("mem db"))))
         // A closed main window means the user is done with the app, so shut the
-        // whole process down rather than leaving the hidden mini-island running.
-        // Scoped to `main`: the mini-island is an implementation detail of the
-        // main window's life and must never own the app lifecycle.
+        // whole process down rather than leaving the on-demand mini-island
+        // running. Scoped to `main`: the mini-island is an implementation detail
+        // of the main window's life and must never own the app lifecycle — it
+        // is created on minimize and destroyed on restore, and Rust only needs
+        // to guarantee it cannot outlive the main window on its own.
         .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;
@@ -160,7 +166,9 @@ fn main() {
     builder
         .invoke_handler(tauri::generate_handler![
             open_music_folder,
+            open_music_folder_via_file,
             pick_folder,
+            pick_folder_via_file,
             pick_audio_files,
             import_audio_files,
             ingest_paths,

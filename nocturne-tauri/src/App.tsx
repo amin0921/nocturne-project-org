@@ -31,6 +31,7 @@ import {
   next,
   playTrackAt,
   prev,
+  publishPlayerState,
   setQueue,
   toggleMute,
   togglePlay,
@@ -46,6 +47,26 @@ import {
   MINI_PINNED_STORAGE_KEY,
   MINI_POSITION_STORAGE_KEY
 } from './services/player-broadcast'
+import { setMiniWindow } from './services/mini-window'
+
+/** Mirrors the Rust `ImportResultDto` returned by the ingestion commands. */
+interface ImportResultDto {
+  inserted: number
+  skipped: number
+}
+
+/**
+ * Upper bound on the mini-island "I have mounted and my reveal listener is
+ * armed" handshake. Only a cold webview start pays this, and only if it stalls.
+ */
+const MINI_READY_TIMEOUT_MS = 2000
+
+/** One-line summary for the import status strip. */
+function describeImport(result: ImportResultDto): string {
+  const head = `Added ${result.inserted} new song${result.inserted === 1 ? '' : 's'}`
+  if (result.skipped <= 0) return head
+  return `${head} (${result.skipped} duplicate${result.skipped === 1 ? '' : 's'} skipped)`
+}
 
 function TableTrackThumbnail({ coverUrl, title }: { coverUrl?: string | null; title?: string }) {
   const [imgError, setImgError] = useState(false)
@@ -81,6 +102,8 @@ export default function App(): JSX.Element {
   const [isCoverViewOpen, setIsCoverViewOpen] = useState(false)
   const [dockExpanded, setDockExpanded] = useState(false)
   const [isMaximized, setIsMaximized] = useState(false)
+  const [dropActive, setDropActive] = useState(false)
+  const [deduping, setDeduping] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [paletteTab, setPaletteTab] = useState<'commands' | 'atlas'>('commands')
 
@@ -119,12 +142,23 @@ export default function App(): JSX.Element {
   }, [])
 
   // Step 79: floating mini-island visibility sync. Main minimized → show the
-  // mini pill (unless pinned flag disabled); restored/focused → hide it.
+  // mini pill (unless pinned flag disabled); restored/focused → DESTROY it.
   // Detection: isMinimized + onFocusChanged + debounced onResized (150ms).
+  //
+  // P0 idle-CPU fix: the window is created ON DEMAND and destroyed on restore.
+  // It used to be a static `visible: false` entry in tauri.conf.json, which
+  // kept a second WebView2 renderer alive at all times (~18% CPU while the app
+  // merely sat in the tray/idle). Geometry, position memory, entrance and
+  // timing are byte-for-byte what the static window produced.
   useEffect(() => {
     let active = true
     const win = getCurrentWindow()
     let debounceTimer: ReturnType<typeof setTimeout> | null = null
+    // Live mini handle + in-flight creation promise. The promise collapses the
+    // focus/resize bursts (and React StrictMode's double effect mount) into a
+    // single window — never two.
+    let mini: WebviewWindow | null = null
+    let miniCreation: Promise<WebviewWindow | null> | null = null
 
     const isPinned = (): boolean => {
       try {
@@ -154,13 +188,91 @@ export default function App(): JSX.Element {
       return null
     }
 
+    /** Same construction options the static tauri.conf.json entry used. */
+    const MINI_WINDOW_OPTIONS = {
+      url: 'index.html',
+      width: 360,
+      height: 130,
+      decorations: false,
+      transparent: true,
+      shadow: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      focus: false,
+      visible: false
+    } as const
+
+    const createMiniWindow = (): Promise<WebviewWindow | null> => {
+      // Another caller is mid-creation — share its result.
+      if (miniCreation) return miniCreation
+      miniCreation = (async () => {
+        // An orphan can still exist (e.g. the app was killed mid-minimize), so
+        // adopt it rather than creating a duplicate label.
+        const existing = await WebviewWindow.getByLabel('mini-island')
+        if (existing) return existing
+
+        // The reveal listener lives in MiniIslandApp's mount effect, and the
+        // liquid-droplet entrance is armed ONLY by an enterKey bump. A window
+        // created and shown before that effect runs would swallow the reveal
+        // and pop in with NO entrance — so wait for the child webview to
+        // announce itself. The handshake is bounded: a slow or failed load must
+        // never strand the user in "app minimized, no pill".
+        let signalReady = (): void => {}
+        const ready = new Promise<void>((resolve) => {
+          signalReady = resolve
+        })
+        // Registered BEFORE the constructor runs, so no announce can be missed.
+        let unlistenReady: (() => void) | null = null
+        try {
+          unlistenReady = await listen('mini-island:ready', () => signalReady())
+        } catch {
+          // No handshake available — the reveal is best-effort either way.
+        }
+
+        let signalCreated = (): void => {}
+        const created = new Promise<void>((resolve) => {
+          signalCreated = resolve
+        })
+        let signalFailed = (): void => {}
+        const failed = new Promise<void>((resolve) => {
+          signalFailed = resolve
+        })
+
+        const handle = new WebviewWindow('mini-island', MINI_WINDOW_OPTIONS)
+        void Promise.all([
+          handle.once('tauri://created', () => signalCreated()),
+          handle.once('tauri://error', () => signalFailed())
+        ]).catch(() => signalFailed())
+
+        try {
+          await Promise.race([created, failed])
+          await Promise.race([
+            ready,
+            new Promise<void>((resolve) => window.setTimeout(resolve, MINI_READY_TIMEOUT_MS))
+          ])
+        } finally {
+          if (unlistenReady) unlistenReady()
+        }
+        return handle
+      })()
+      return miniCreation
+    }
+
     const syncMiniIsland = async (): Promise<void> => {
       if (!active) return
       try {
         const minimized = await win.isMinimized()
-        const mini = await WebviewWindow.getByLabel('mini-island')
-        if (!active || !mini) return
         if (minimized && isPinned()) {
+          if (!mini) {
+            const handle = await createMiniWindow()
+            if (!active || !handle) return
+            mini = handle
+            setMiniWindow(handle)
+            // The window just mounted with an empty mirror store — prime it
+            // before the first paint so the pill never appears blank.
+            publishPlayerState()
+          }
           // Reveal signal BEFORE programmatic positioning: arms the mini's
           // 600ms onMoved save-guard so this setPosition cannot overwrite the
           // stored user coordinate, and queues the liquid-droplet entrance.
@@ -204,8 +316,16 @@ export default function App(): JSX.Element {
           // focus:false at creation — claim focus on appearance so the mini's
           // Escape listener receives keydown without requiring a prior click.
           await mini.setFocus()
-        } else {
-          await mini.hide()
+        } else if (mini) {
+          // Restore/unminimize (or unpin): DESTROY rather than hide. A hidden
+          // WebView2 renderer is exactly what burned ~18% CPU all session —
+          // teardown is the whole point of this fix. The next minimize builds
+          // a fresh window, so the pill is always a clean first paint.
+          const doomed = mini
+          mini = null
+          miniCreation = null
+          setMiniWindow(null)
+          await doomed.destroy()
         }
       } catch (err) {
         console.debug('Mini-island visibility sync error:', err)
@@ -227,6 +347,13 @@ export default function App(): JSX.Element {
     return () => {
       active = false
       if (debounceTimer) clearTimeout(debounceTimer)
+      // StrictMode remounts the effect; drop the stale handle so the fan-out
+      // gate and the next mount's window lookup start from a clean slate.
+      if (mini) {
+        mini = null
+        miniCreation = null
+        setMiniWindow(null)
+      }
       unlistenFocus.then((unlisten) => unlisten()).catch(() => {})
       unlistenResize.then((unlisten) => unlisten()).catch(() => {})
     }
@@ -502,14 +629,19 @@ export default function App(): JSX.Element {
 
   const addFolder = useCallback(async () => {
     try {
-      // 1. Guard dialog: Open native folder picker WITHOUT mutating UI state or showing loading
-      const selected = await invoke<string | null>('pick_folder')
-      if (!selected) {
+      // 1. Guard dialog: the Windows folder-only picker hides every file, which
+      // makes a music folder look empty. The approved UX opens an audio-filtered
+      // file dialog instead — the user sees the supported tracks and picks any
+      // one of them; Rust then resolves its parent folder as the scan root.
+      // No UI state mutations happen until a file is actually chosen.
+      const picked = await invoke<string | null>('pick_folder_via_file')
+      if (!picked) {
         // User cancelled dialog — zero state mutations, zero queries, zero loading indicators
         return
       }
 
-      // 2. Folder confirmed: activate scanning state and live feedback
+      // 2. File confirmed: activate scanning state and live feedback. The Rust
+      // side resolves the parent folder of the picked track and scans it.
       setScanning(true)
       setNotice('Scanning audio files...')
       setScanProgress(null)
@@ -522,12 +654,8 @@ export default function App(): JSX.Element {
       })
 
       try {
-        const count = await invoke<number>('scan_folder', { path: selected })
-        if (count > 0) {
-          setNotice(`Scan complete: ${count} track${count === 1 ? '' : 's'} imported`)
-        } else {
-          setNotice('Scan complete: No new audio tracks found')
-        }
+        const result = await invoke<ImportResultDto>('scan_folder', { path: picked })
+        setNotice(describeImport(result))
         await reload()
       } finally {
         unlisten()
@@ -568,12 +696,8 @@ export default function App(): JSX.Element {
         `Importing ${selected.length} selected file${selected.length === 1 ? '' : 's'}...`
       )
 
-      const count = await invoke<number>('import_audio_files', { filePaths: selected })
-      if (count > 0) {
-        setNotice(`Imported ${count} track${count === 1 ? '' : 's'}`)
-      } else {
-        setNotice('No new audio tracks imported')
-      }
+      const result = await invoke<ImportResultDto>('import_audio_files', { filePaths: selected })
+      setNotice(describeImport(result))
       await reload()
     } catch (err) {
       console.error('[Import files error]:', err)
@@ -581,6 +705,79 @@ export default function App(): JSX.Element {
     } finally {
       setScanning(false)
       setScanProgress(null)
+    }
+  }, [reload])
+
+  /**
+   * OS drag-and-drop ingestion. Tauri owns the drop (the webview's own HTML5
+   * drag events are disabled by `dragDropEnabled`), and hands us a mixed list of
+   * folder and file paths. The folder/file split and all path validation happen
+   * in Rust -- this side never stats anything, it just forwards and reports.
+   */
+  const ingestDropped = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return
+      setScanning(true)
+      setScanProgress(null)
+      setNotice(`Adding ${paths.length} dropped item${paths.length === 1 ? '' : 's'}…`)
+      try {
+        const result = await invoke<ImportResultDto>('ingest_paths', { paths })
+        setNotice(describeImport(result))
+        await reload()
+      } catch (err) {
+        setNotice(`Could not add dropped items: ${String(err)}`)
+      } finally {
+        setScanning(false)
+        setScanProgress(null)
+      }
+    },
+    [reload]
+  )
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void getCurrentWindow()
+      .onDragDropEvent((event) => {
+        const payload = event.payload
+        if (payload.type === 'enter' || payload.type === 'over') {
+          setDropActive(true)
+          return
+        }
+        setDropActive(false)
+        if (payload.type === 'drop') {
+          void ingestDropped(payload.paths)
+        }
+      })
+      .then((fn) => {
+        // The listener may resolve after teardown; release it immediately then.
+        if (disposed) fn()
+        else unlisten = fn
+      })
+      .catch(() => {
+        // Drag & drop unavailable: the Add Folder / Add Files buttons still work.
+      })
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [ingestDropped])
+
+  /** Manual re-run of the dedup pass. Database rows only; no file is touched. */
+  const removeDuplicates = useCallback(async () => {
+    setDeduping(true)
+    try {
+      const purged = await invoke<number>('deduplicate_library')
+      setNotice(
+        purged > 0
+          ? `Removed ${purged} duplicate ${purged === 1 ? 'row' : 'rows'}`
+          : 'No duplicates found'
+      )
+      await reload()
+    } catch (err) {
+      setNotice(`Could not remove duplicates: ${String(err)}`)
+    } finally {
+      setDeduping(false)
     }
   }, [reload])
 
@@ -679,6 +876,15 @@ export default function App(): JSX.Element {
           {scanning ? 'Scanning…' : countText}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void removeDuplicates()}
+            disabled={scanning || deduping}
+            title="Keep one copy of each song and remove duplicate library rows"
+            className="flex h-8 items-center rounded-lg px-3 text-xs font-medium text-faint hover:bg-raised/80 hover:text-ink disabled:opacity-50 transition-colors"
+          >
+            {deduping ? 'Removing…' : 'Remove Duplicates'}
+          </button>
           <button
             type="button"
             onClick={() => setClearConfirmOpen(true)}
@@ -955,6 +1161,20 @@ export default function App(): JSX.Element {
           onRunCommand={handleRunCommand}
           initialTab={paletteTab}
         />
+
+        {/* OS drag-and-drop target overlay. `transform-gpu` keeps the fade on
+            the compositor so it stays smooth while a scan runs underneath. */}
+        {dropActive && (
+          <div
+            className="pointer-events-none fixed inset-0 z-[100] grid place-items-center bg-black/55 backdrop-blur-[2px]"
+            aria-hidden="true"
+          >
+            <div className="transform-gpu rounded-2xl border border-dashed border-ember/70 bg-surface/90 px-12 py-9 text-center shadow-island">
+              <p className="text-sm font-medium text-ink">Drop audio files to add to library</p>
+              <p className="mt-1.5 text-xs text-faint">Folders are scanned recursively</p>
+            </div>
+          </div>
+        )}
       </div>
     </ErrorBoundary>
   )
