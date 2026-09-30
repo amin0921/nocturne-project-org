@@ -165,7 +165,16 @@ export function publishPlayerState(): void {
 }
 
 function set(patch: Partial<PlayerSnapshot>): void {
+  // Queue checkpointing (Feature 3): only STRUCTURAL playback changes debounced
+  // a checkpoint write — the ~4Hz currentTime/duration ticks never touch SQLite.
+  const structural =
+    'queue' in patch ||
+    'index' in patch ||
+    'currentTrack' in patch ||
+    'isPlaying' in patch ||
+    'mode' in patch
   snapshot = { ...snapshot, ...patch }
+  if (structural) scheduleCheckpoint()
   listeners.forEach((l) => l())
   broadcastState()
 }
@@ -427,6 +436,9 @@ function finishActiveSession(reason: 'ended' | 'skip'): void {
   }
   flushListeningHistory(activeSession, reason)
   activeSession = null
+  // Immediate (non-debounced) checkpoint on track stop/advance: guarantees the
+  // pre-advance queue state survives a crash within the 2s debounce window.
+  if (!unloading) flushCheckpoint(false)
 }
 
 function startPlaySession(track: PlayerTrack): void {
@@ -441,10 +453,149 @@ function startPlaySession(track: PlayerTrack): void {
   }
 }
 
+/** True once beforeunload fired — suppresses clean=false flushes racing the
+ * final clean=true write (WebView2 may kill the process mid-IPC). */
+let unloading = false
+
 if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', () => {
+    unloading = true
     finishActiveSession('skip')
+    // Graceful shutdown: persist the live snapshot immediately with the clean
+    // marker, then flip the checkpoint's clean_exit via the dedicated command
+    // (belt & braces — the save itself already carries cleanExit=true).
+    // The unloading flag suppresses finishActiveSession's own clean=false
+    // flush so the two writes can never race into inverted order.
+    flushCheckpoint(true)
+    invoke('mark_checkpoint_clean_exit').catch((err) => {
+      console.debug('[usePlayerStore] mark_checkpoint_clean_exit error:', err)
+    })
   })
+}
+
+// ---------------------------------------------------------------------
+// Queue checkpoint (Phase 01 · Feature 3)
+//
+// Debounced persistence of the playback state into the SQLite singleton.
+// Writes fire ONLY on structural changes (queue/index/track/play-state/mode),
+// 2s after the last one — the ~4Hz timeupdate clock never reaches SQLite, so
+// idle CPU stays at zero and the database is written at most once per 2s of
+// activity. Position is read from the store at write time, which is exactly
+// the "coarse interval" contract: track change/pause refresh it for free.
+// ---------------------------------------------------------------------
+
+interface CheckpointSnapshot {
+  tracks: PlayerTrack[]
+  activeIndex: number
+  positionMs: number
+  isShuffle: boolean
+  repeatMode: PlaybackMode
+}
+
+const CHECKPOINT_DEBOUNCE_MS = 2000
+
+let checkpointTimer: number | null = null
+
+function buildCheckpointSnapshot(): CheckpointSnapshot {
+  const { queue, index, mode, currentTime } = snapshot
+  return {
+    // queueId is per-session identity; a restored queue mints fresh ones.
+    tracks: queue.map((t) => ({ ...t, queueId: undefined })),
+    activeIndex: index,
+    positionMs: Math.max(0, Math.round(currentTime * 1000)),
+    isShuffle: mode === 'shuffle',
+    repeatMode: mode === 'shuffle' ? 'normal' : mode
+  }
+}
+
+function flushCheckpoint(cleanExit = false): void {
+  if (checkpointTimer !== null) {
+    window.clearTimeout(checkpointTimer)
+    checkpointTimer = null
+  }
+  const payload = buildCheckpointSnapshot()
+  console.log(
+    `[Checkpoint] Saved checkpoint (${payload.tracks.length} tracks, index ${payload.activeIndex}, cleanExit ${cleanExit})`
+  )
+  invoke('save_queue_checkpoint', {
+    snapshotJson: JSON.stringify(payload),
+    trackCount: payload.tracks.length,
+    cleanExit
+  }).catch((err) => {
+    console.debug('[usePlayerStore] save_queue_checkpoint error:', err)
+  })
+}
+
+function scheduleCheckpoint(): void {
+  if (!isMainWindow) return
+  if (checkpointTimer !== null) window.clearTimeout(checkpointTimer)
+  checkpointTimer = window.setTimeout(() => {
+    checkpointTimer = null
+    flushCheckpoint(false)
+  }, CHECKPOINT_DEBOUNCE_MS)
+}
+
+/**
+ * Restore a persisted snapshot: queue + active track reinstated, audio loaded
+ * and seeked to the saved position, playback left PAUSED for safety. Clears
+ * the SQLite checkpoint once consumed. Returns false for unusable snapshots
+ * (parse failure / no playable tracks), which callers should treat as dismiss.
+ */
+export async function restoreCheckpoint(snapshotJson: string): Promise<boolean> {
+  ensureWiring()
+  let parsed: CheckpointSnapshot
+  try {
+    parsed = JSON.parse(snapshotJson) as CheckpointSnapshot
+  } catch {
+    return false
+  }
+  const tracks = Array.isArray(parsed.tracks)
+    ? parsed.tracks.filter((t) => t && typeof t.path === 'string' && t.path.length > 0)
+    : []
+  if (tracks.length === 0) {
+    await discardCheckpoint()
+    return false
+  }
+  const activeIndex = Math.min(Math.max(0, Math.floor(parsed.activeIndex ?? 0)), tracks.length - 1)
+  const withFreshIds = tracks.map((t) => ({ ...t, queueId: nextQueueId() }))
+  const repeatMode: PlaybackMode =
+    parsed.repeatMode === 'repeat-all' || parsed.repeatMode === 'repeat-one' || parsed.repeatMode === 'normal'
+      ? parsed.repeatMode
+      : 'normal'
+  const track = withFreshIds[activeIndex]
+
+  set({
+    queue: withFreshIds,
+    priorityQueue: [],
+    index: activeIndex,
+    currentTrack: track,
+    currentTime: 0,
+    duration: track.duration_secs ?? null,
+    currentLyrics: [],
+    playbackError: null,
+    mode: parsed.isShuffle ? 'shuffle' : repeatMode
+  })
+  resetFailures()
+  audioController.load(toAudioUrl(track.path))
+  const positionSecs = Math.max(0, (parsed.positionMs ?? 0) / 1000)
+  if (positionSecs > 0) {
+    // Chromium applies this as the default playback start position even
+    // before metadata arrives — restored sessions resume mid-track, paused.
+    audioController.seek(positionSecs)
+    set({ currentTime: positionSecs })
+  }
+  void loadLyricsForTrack(track)
+  await discardCheckpoint()
+  return true
+}
+
+/** Drop the persisted checkpoint (banner dismissed / expired). */
+export async function discardCheckpoint(): Promise<void> {
+  try {
+    await invoke('clear_queue_checkpoint')
+  } catch (err) {
+    console.debug('[usePlayerStore] clear_queue_checkpoint error:', err)
+  }
 }
 
 /**
@@ -510,6 +661,11 @@ function ensureWiring(): void {
   el.addEventListener('pause', () => {
     set({ isPlaying: false })
     updatePlayTrackingTime(false)
+    // Immediate (non-debounced) flush: pause is a coarse checkpoint point, and
+    // WebView2 can terminate the process before any beforeunload IPC lands —
+    // the last paused state must already be in SQLite. flushCheckpoint cancels
+    // any pending debounced write, so nothing double-fires.
+    if (!unloading) flushCheckpoint(false)
   })
   el.addEventListener('error', () => {
     if (registerFailure(snapshot.currentTrack, mediaErrorText(audioController.getError()))) return
