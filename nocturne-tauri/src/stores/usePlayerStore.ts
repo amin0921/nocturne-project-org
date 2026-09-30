@@ -380,6 +380,42 @@ function flushActiveSessionPlay(): void {
   })
 }
 
+/**
+ * Listening-history flush (Phase 01 · Feature 2): exactly ONE
+ * `record_listening_history` invoke per track transition — no periodic
+ * writes. Status per research spec: natural end OR >= 90% of duration heard
+ * → 'completed' (so short tracks that finish naturally are never 'skipped'),
+ * < 30s heard → 'skipped', otherwise 'partial'. `trackId` is the canonical
+ * path so history survives rescans (track row ids are reassigned on rescan).
+ */
+function flushListeningHistory(session: PlayTrackingSession, reason: 'ended' | 'skip'): void {
+  const listenedSecs = session.accumulatedMs / 1000
+  if (listenedSecs <= 0) return
+  const track = session.track
+  const duration =
+    track.duration_secs && track.duration_secs > 0 ? track.duration_secs : null
+  let status: 'completed' | 'skipped' | 'partial'
+  if (reason === 'ended') {
+    status = 'completed'
+  } else if (duration !== null && listenedSecs >= duration * 0.9) {
+    status = 'completed'
+  } else if (listenedSecs < 30) {
+    status = 'skipped'
+  } else {
+    status = 'partial'
+  }
+  invoke('record_listening_history', {
+    trackId: track.path,
+    title: track.title,
+    artist: track.artist,
+    durationSecs: duration ?? 0,
+    durationListenedSecs: listenedSecs,
+    status
+  }).catch((err) => {
+    console.debug('[usePlayerStore] record_listening_history error:', err)
+  })
+}
+
 function finishActiveSession(reason: 'ended' | 'skip'): void {
   if (!activeSession) return
   updatePlayTrackingTime(false)
@@ -389,6 +425,7 @@ function finishActiveSession(reason: 'ended' | 'skip'): void {
       flushActiveSessionPlay()
     }
   }
+  flushListeningHistory(activeSession, reason)
   activeSession = null
 }
 
