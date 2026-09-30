@@ -3,10 +3,17 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
 import { audioController } from '../services/audio-controller'
 import { getPlayerChannel, type StateUpdateMessage } from '../services/player-broadcast'
+import { hasMiniWindow } from '../services/mini-window'
 import { toAudioUrl } from '../utils/audio-url'
 import { parseLrc, type LyricLine } from '../utils/lrcParser'
 import { fetchLyricsOnline } from '../services/lyricsService'
 import { usePlaybackHistory } from '../components/queue/usePlaybackHistory'
+import {
+  cancelSleepIfTrackBound,
+  handleSleepTrackEnded,
+  notifySleepProgress,
+  notifySleepQueueEnd
+} from './useSleepTimer'
 
 export interface PlayerTrack {
   id: number
@@ -110,9 +117,20 @@ try {
   isMainWindow = true
 }
 
-/** Fan the current playback snapshot out to the mini-island window (~4Hz timeupdate cadence). */
+/**
+ * Fan the current playback snapshot out to the mini-island window (~4Hz
+ * timeupdate cadence).
+ *
+ * P0 idle-CPU fix: the mini window is created on demand and destroyed on
+ * restore, so for the vast majority of a session there is NO listener. Every
+ * unconditional postMessage still walked the structured-clone + BroadcastChannel
+ * dispatch path on the main renderer for nothing. Skip it entirely unless a
+ * mini-island window actually exists (App.tsx owns the lifecycle and publishes
+ * the handle); the cadence itself is unchanged while the mini is present.
+ */
 function broadcastState(): void {
   if (!isMainWindow) return
+  if (!hasMiniWindow()) return
   const ch = getPlayerChannel()
   if (!ch) return
   const track = snapshot.currentTrack
@@ -132,6 +150,18 @@ function broadcastState(): void {
   } catch {
     // Channel closed / structured-clone failure — mini simply misses an update.
   }
+}
+
+/**
+ * One-shot state push to the mini-island.
+ *
+ * P0 on-demand lifecycle: the mini window is built fresh on every minimize, so
+ * it mounts with an empty mirror store. Without this priming push the pill
+ * would sit blank for up to one ~4Hz tick after appearing. Called by App.tsx
+ * right after the window reports ready, before it is shown.
+ */
+export function publishPlayerState(): void {
+  broadcastState()
 }
 
 function set(patch: Partial<PlayerSnapshot>): void {
@@ -450,6 +480,8 @@ function ensureWiring(): void {
   })
   el.addEventListener('ended', () => {
     finishActiveSession('ended')
+    // End of Track sleep preset claims the stop: pause here, never advance.
+    if (handleSleepTrackEnded()) return
     if (snapshot.mode === 'repeat-one') {
       audioController.seek(0)
       void audioController.play().catch(() => undefined)
@@ -473,11 +505,14 @@ function ensureWiring(): void {
       void startAt(snapshot.index + 1)
     } else {
       set({ isPlaying: false })
+      // End of Queue sleep preset completes exactly at this natural stop.
+      notifySleepQueueEnd()
     }
   })
   audioController.onTime(() => {
     set({ currentTime: audioController.getTime() })
     updatePlayTrackingTime(snapshot.isPlaying)
+    notifySleepProgress(audioController.getTime(), snapshot.duration)
   })
 }
 
@@ -776,6 +811,7 @@ export function isTrackFavorite(trackId?: number | null): boolean {
 /** Cleanly pauses playback, unloads active audio, and resets queue state */
 export function clearQueue(): void {
   finishActiveSession('skip')
+  cancelSleepIfTrackBound()
   lyricsAbortController?.abort()
   ensureWiring()
   try {

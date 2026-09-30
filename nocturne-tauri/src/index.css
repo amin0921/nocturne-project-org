@@ -404,6 +404,14 @@ body::-webkit-scrollbar,
   animation: waveform-idle 1.2s ease-in-out infinite;
 }
 
+/* P0 idle-CPU: pause the 72 idle bars while the window is hidden or unfocused.
+   `animation-play-state: paused` freezes the timeline in place (no restart,
+   no accumulated drift) and is inherited by every `.waveform-idle-bar` inside
+   the marked SVG, so the visible result is pixel-identical. */
+.waveform-idle-suspended .waveform-idle-bar {
+  animation-play-state: paused;
+}
+
 /* Media query to disable animations cleanly under reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .animate-vinyl-spin,
@@ -688,6 +696,28 @@ body::-webkit-scrollbar,
    holds FLASH_HOLD_MS (400ms), then relaxes back to silver over 300ms. */
 .mq-chip {
   transition: color 300ms ease-out, filter 300ms ease-out;
+}
+
+/* ---------------- Off-screen row skipping (tab-switch performance) ---------------- */
+
+/*
+ * `content-visibility: auto` lets Chromium skip layout/paint for rows that are
+ * off-screen, which is what makes the now-persistent heavy panes cheap to
+ * reveal. It is applied ONLY to the library table rows, which have a hard,
+ * fixed height (`h-14` = 56px) — so `contain-intrinsic-size` is EXACT and the
+ * scrollbar, sticky offset and geometry are unchanged whether a row is
+ * actually rendered or skipped.
+ *
+ * Deliberately NOT applied to `.nq-row`: queue rows are content-sized (~48px,
+ * derived from the 36px cover thumb) and are the measured basis of the
+ * drag-reorder hit-testing (`updateDragTarget` reads every row's
+ * getBoundingClientRect) and the FLIP glide. A mismatch between real and
+ * intrinsic height would accumulate per row and shift every drop target down a
+ * long playlist — correctness of drag reorder outranks the extra saving.
+ */
+.data-table-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 56px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1037,12 +1067,26 @@ body::-webkit-scrollbar,
  * Play/Pause Seamless Vector Morph & Amber Aura Pulse (Category 1)
  * ==================================================================== */
 
+/*
+ * Amber aura pulse — CONTAINED INSIDE THE CAPSULE.
+ *
+ * Clearance budget: PlayerBar's root is `min-h-[64px]` with `py-1`, so the
+ * content box is 56px; the play button is `size-12` (48px) and `items-center`
+ * centres it, leaving 4px + 4px of padding = EXACTLY 8px between the button
+ * edge and the capsule border. `.island-player` sets `overflow: visible`, so a
+ * glow wider than 8px is not clipped — it paints straight over the border and
+ * onto the transparent desktop. The previous peak (`0 0 32px 5px`, a 37px
+ * extent) therefore bled ~29px past the top/bottom edges.
+ *
+ * The aura is now sized to that 8px budget: resting 5px, peak 7px (1px of
+ * margin). The breath stays legible through the opacity ramp 0.30 → 0.50.
+ */
 @keyframes play-aura-pulse {
   0%, 100% {
-    box-shadow: 0 0 20px 2px rgba(245, 158, 11, 0.4);
+    box-shadow: 0 0 5px 0 rgba(234, 179, 8, 0.3);
   }
   50% {
-    box-shadow: 0 0 32px 5px rgba(245, 158, 11, 0.68);
+    box-shadow: 0 0 6px 1px rgba(234, 179, 8, 0.5);
   }
 }
 
@@ -1074,3 +1118,81 @@ body::-webkit-scrollbar,
 
 
 
+
+/* ====================================================================
+ * Sleep Timer — popover mount, badge pop-in, breathing pulse ring.
+ * Composite properties only (transform / opacity); no layout triggers.
+ * ==================================================================== */
+
+/* Popover mount: origin-aware scale 0.96 -> 1 + fade, 180ms. */
+@keyframes sleep-popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.sleep-popover {
+  transform-origin: bottom right;
+  animation: sleep-popover-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+}
+
+/* Countdown badge pop-in with a springy overshoot. */
+@keyframes sleep-badge-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.sleep-badge-pop {
+  animation: sleep-badge-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+  will-change: transform, opacity;
+}
+
+/* Breathing amber ring on the pill (::after scales 1 -> 1.06, 2.4s). */
+.sleep-pill {
+  position: relative;
+}
+
+.sleep-pill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 1px rgba(234, 179, 8, 0.35),
+    0 0 12px rgba(234, 179, 8, 0.28);
+  animation: sleep-breathe 2.4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes sleep-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sleep-popover,
+  .sleep-badge-pop,
+  .sleep-pill::after {
+    animation: none !important;
+  }
+}

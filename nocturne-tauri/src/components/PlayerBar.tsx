@@ -24,6 +24,7 @@ import { VinylOrbit } from './VinylOrbit'
 import { Marquee } from './Marquee'
 import { PlayPauseButton } from './controls/PlayPauseButton'
 import { FavoriteButton } from './FavoriteButton'
+import { SleepTimerToggle } from './sleep/SleepTimerToggle'
 import { DetentKnob } from './controls/DetentKnob'
 
 export interface PlayerBarProps {
@@ -218,6 +219,9 @@ export default function PlayerBar({ onOpenCoverView }: PlayerBarProps = {}): JSX
         {hasTrack && (
           <FavoriteButton trackId={currentTrack.id} />
         )}
+
+        {/* Sleep Timer (moon trigger, countdown pill, popover) */}
+        <SleepTimerToggle />
 
         {/* Category 4: Studio Detent Volume Knob (21 magnetic stops, 270° arc) */}
         <DetentKnob />
