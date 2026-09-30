@@ -918,6 +918,74 @@ pub fn get_track_play_count(
     crate::db::get_track_play_count(&conn, &track_id)
 }
 
+// ---------------- Queue checkpoint & saved sessions (Phase 01 · Feature 3) ----------------
+
+/// UPSERT the singleton playback checkpoint. `cleanExit` defaults to false so
+/// periodic saves during playback always leave a crash marker until the
+/// graceful-unload path explicitly flips it.
+#[tauri::command]
+pub fn save_queue_checkpoint(
+    state: State<DbState>,
+    snapshot_json: String,
+    track_count: u32,
+    clean_exit: Option<bool>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::save_queue_checkpoint(&conn, &snapshot_json, track_count, clean_exit.unwrap_or(false))
+}
+
+/// Graceful-exit marker: mark the checkpoint as a clean shutdown.
+#[tauri::command]
+pub fn mark_checkpoint_clean_exit(state: State<DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::mark_checkpoint_clean_exit(&conn)
+}
+
+/// Read the singleton checkpoint; `null` when nothing has ever been saved.
+#[tauri::command]
+pub fn get_queue_checkpoint(
+    state: State<DbState>,
+) -> Result<Option<crate::db::QueueCheckpointRecord>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::get_queue_checkpoint(&conn)
+}
+
+/// Discard the checkpoint (e.g. the user declines crash recovery).
+#[tauri::command]
+pub fn clear_queue_checkpoint(state: State<DbState>) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::clear_queue_checkpoint(&conn)
+}
+
+/// Persist the current playback state as a named session; returns its id.
+#[tauri::command]
+pub fn save_named_session(
+    state: State<DbState>,
+    name: String,
+    track_count: u32,
+    duration_secs: f64,
+    snapshot_json: String,
+) -> Result<i64, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::save_named_session(&conn, &name, track_count, duration_secs, &snapshot_json)
+}
+
+/// List named sessions, newest activity first.
+#[tauri::command]
+pub fn list_saved_sessions(
+    state: State<DbState>,
+) -> Result<Vec<crate::db::SavedSessionSummary>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::list_saved_sessions(&conn)
+}
+
+/// Delete one named session by id.
+#[tauri::command]
+pub fn delete_named_session(state: State<DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::delete_named_session(&conn, id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

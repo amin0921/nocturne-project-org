@@ -61,6 +61,23 @@ CREATE TABLE IF NOT EXISTS listening_history (
 );
 CREATE INDEX IF NOT EXISTS idx_listening_history_time ON listening_history(played_at DESC);
 CREATE INDEX IF NOT EXISTS idx_listening_history_track ON listening_history(track_id);
+CREATE TABLE IF NOT EXISTS queue_checkpoint (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  snapshot_json TEXT NOT NULL,
+  track_count INTEGER NOT NULL,
+  clean_exit INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS saved_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  track_count INTEGER NOT NULL,
+  duration_secs REAL NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_saved_sessions_updated ON saved_sessions(updated_at DESC);
 CREATE TABLE IF NOT EXISTS app_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -392,6 +409,163 @@ pub fn get_track_play_count(conn: &Connection, track_id: &str) -> Result<u64, St
     Ok(n.max(0) as u64)
 }
 
+// ---------------------------------------------------------------------
+// Queue checkpoint & saved sessions (Phase 01 · Feature 3)
+//
+// `queue_checkpoint` is a SINGLETON (id = 1) holding the last playback
+// snapshot. `clean_exit = 0` is the resting state after every write, so a
+// row with 0 at boot means the previous run ended abruptly (crash / kill);
+// only the graceful-unload path flips it to 1 before the process exits.
+// `saved_sessions` are user-named copies of the same snapshot shape.
+// ---------------------------------------------------------------------
+
+/// One persisted playback snapshot as serialized to the webview (camelCase).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueCheckpointRecord {
+    /// Opaque JSON blob: tracks, activeIndex, positionMs, isShuffle, repeatMode.
+    pub snapshot_json: String,
+    pub track_count: i64,
+    /// false = crash/unexpected kill, true = graceful exit.
+    pub clean_exit: bool,
+    /// Unix epoch seconds.
+    pub updated_at: i64,
+}
+
+/// Listing row for a user-named session (snapshot payload excluded).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSessionSummary {
+    pub id: i64,
+    pub name: String,
+    pub track_count: i64,
+    pub duration_secs: f64,
+    /// Unix epoch seconds.
+    pub created_at: i64,
+    /// Unix epoch seconds.
+    pub updated_at: i64,
+}
+
+/// UPSERT the singleton checkpoint (id = 1). Every save resets `clean_exit`
+/// to the given value — callers pass `false` during playback so an
+/// unclean death always leaves a crash marker behind.
+pub fn save_queue_checkpoint(
+    conn: &Connection,
+    snapshot_json: &str,
+    track_count: u32,
+    clean_exit: bool,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO queue_checkpoint (id, snapshot_json, track_count, clean_exit, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET
+           snapshot_json = excluded.snapshot_json,
+           track_count = excluded.track_count,
+           clean_exit = excluded.clean_exit,
+           updated_at = excluded.updated_at",
+        params![snapshot_json, track_count as i64, clean_exit as i64, now_secs()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Graceful-exit marker: flip the singleton's `clean_exit` to 1. No-op when
+/// no checkpoint exists.
+pub fn mark_checkpoint_clean_exit(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE queue_checkpoint SET clean_exit = 1, updated_at = ?1 WHERE id = 1",
+        params![now_secs()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Read the singleton checkpoint; `None` when nothing has ever been saved.
+pub fn get_queue_checkpoint(conn: &Connection) -> Result<Option<QueueCheckpointRecord>, String> {
+    conn.query_row(
+        "SELECT snapshot_json, track_count, clean_exit, updated_at
+         FROM queue_checkpoint WHERE id = 1",
+        [],
+        |r| {
+            Ok(QueueCheckpointRecord {
+                snapshot_json: r.get(0)?,
+                track_count: r.get(1)?,
+                clean_exit: r.get::<_, i64>(2)? != 0,
+                updated_at: r.get(3)?,
+            })
+        },
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other.to_string()),
+    })
+}
+
+/// Remove the singleton checkpoint entirely (e.g. user discards a crash offer).
+pub fn clear_queue_checkpoint(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM queue_checkpoint WHERE id = 1", [])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Insert a named session; returns its row id. Name is trimmed and must not
+/// be empty.
+pub fn save_named_session(
+    conn: &Connection,
+    name: &str,
+    track_count: u32,
+    duration_secs: f64,
+    snapshot_json: &str,
+) -> Result<i64, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("session name must not be empty".to_string());
+    }
+    let now = now_secs();
+    conn.execute(
+        "INSERT INTO saved_sessions (name, track_count, duration_secs, snapshot_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![trimmed, track_count as i64, duration_secs, snapshot_json, now, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// All named sessions, newest activity first (`updated_at DESC`, row id as
+/// the tie-breaker). Snapshot payloads are excluded from the listing.
+pub fn list_saved_sessions(conn: &Connection) -> Result<Vec<SavedSessionSummary>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, track_count, duration_secs, created_at, updated_at
+             FROM saved_sessions
+             ORDER BY updated_at DESC, id DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SavedSessionSummary {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                track_count: row.get(2)?,
+                duration_secs: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// Delete one named session by id. Deleting an unknown id is a no-op.
+pub fn delete_named_session(conn: &Connection, id: i64) -> Result<(), String> {
+    conn.execute("DELETE FROM saved_sessions WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,5 +699,114 @@ mod tests {
         // Ordering under a bounded limit: the three newest of the four rows.
         let recent = get_recent_listening_history(&conn, 3).unwrap();
         assert_eq!(recent.iter().map(|r| r.track_id.as_str()).collect::<Vec<_>>(), vec!["t2", "t1", "t1"]);
+    }
+
+    #[test]
+    fn queue_checkpoint_singleton_upsert_and_clean_exit_toggle() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_conn(&conn).unwrap();
+        assert!(get_queue_checkpoint(&conn).unwrap().is_none());
+
+        save_queue_checkpoint(&conn, "{\"a\":1}", 12, false).unwrap();
+        let cp = get_queue_checkpoint(&conn).unwrap().unwrap();
+        assert_eq!(cp.snapshot_json, "{\"a\":1}");
+        assert_eq!(cp.track_count, 12);
+        assert!(!cp.clean_exit, "fresh saves must carry the crash marker");
+
+        // UPSERT: still exactly one row (singleton), values replaced.
+        save_queue_checkpoint(&conn, "{\"a\":2}", 7, false).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM queue_checkpoint", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let cp = get_queue_checkpoint(&conn).unwrap().unwrap();
+        assert_eq!(cp.snapshot_json, "{\"a\":2}");
+        assert_eq!(cp.track_count, 7);
+        assert!(!cp.clean_exit);
+
+        // Graceful unload flips the marker on the SAME row.
+        mark_checkpoint_clean_exit(&conn).unwrap();
+        let cp = get_queue_checkpoint(&conn).unwrap().unwrap();
+        assert!(cp.clean_exit, "mark_checkpoint_clean_exit must set clean_exit=1");
+        assert_eq!(cp.snapshot_json, "{\"a\":2}");
+        assert_eq!(cp.track_count, 7);
+    }
+
+    #[test]
+    fn queue_checkpoint_crash_vs_graceful_and_clear() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_conn(&conn).unwrap();
+
+        // Crash simulation: save during playback (clean_exit=false), no unload.
+        save_queue_checkpoint(&conn, "{\"i\":0}", 5, false).unwrap();
+        assert!(!get_queue_checkpoint(&conn).unwrap().unwrap().clean_exit);
+
+        // Graceful simulation: same snapshot path, then the unload marker.
+        save_queue_checkpoint(&conn, "{\"i\":1}", 5, false).unwrap();
+        mark_checkpoint_clean_exit(&conn).unwrap();
+        assert!(get_queue_checkpoint(&conn).unwrap().unwrap().clean_exit);
+
+        // The boolean must round-trip through storage as 0/1, not text.
+        let raw: i64 = conn
+            .query_row("SELECT clean_exit FROM queue_checkpoint WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(raw, 1);
+
+        // Discarding recovery removes the row; reading afterwards is None.
+        clear_queue_checkpoint(&conn).unwrap();
+        assert!(get_queue_checkpoint(&conn).unwrap().is_none());
+        // Clearing an absent checkpoint stays Ok (idempotent).
+        clear_queue_checkpoint(&conn).unwrap();
+    }
+
+    #[test]
+    fn saved_sessions_create_list_and_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_conn(&conn).unwrap();
+
+        assert!(save_named_session(&conn, "   ", 3, 100.0, "{}").is_err(), "blank names rejected");
+
+        let id_a = save_named_session(&conn, "Morning", 10, 2400.0, "{\"q\":\"A\"}").unwrap();
+        let id_b = save_named_session(&conn, "  Focus Mix  ", 4, 900.5, "{\"q\":\"B\"}").unwrap();
+        let id_c = save_named_session(&conn, "Late Night", 25, 7200.0, "{\"q\":\"C\"}").unwrap();
+        assert_ne!(id_a, id_b);
+
+        // Newest activity first; names are trimmed on write.
+        let listed = list_saved_sessions(&conn).unwrap();
+        let names: Vec<&str> = listed.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Late Night", "Focus Mix", "Morning"]);
+        assert_eq!(listed[1].track_count, 4);
+        assert!((listed[1].duration_secs - 900.5).abs() < f64::EPSILON);
+
+        // Deleting removes exactly the target row.
+        delete_named_session(&conn, id_b).unwrap();
+        let listed = list_saved_sessions(&conn).unwrap();
+        assert_eq!(listed.iter().map(|s| s.id).collect::<Vec<_>>(), vec![id_c, id_a]);
+        // Deleting an unknown id is a silent no-op.
+        delete_named_session(&conn, id_b).unwrap();
+        assert_eq!(list_saved_sessions(&conn).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn checkpoint_and_sessions_migration_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_conn(&conn).unwrap();
+        save_queue_checkpoint(&conn, "{\"k\":1}", 3, true).unwrap();
+        save_named_session(&conn, "Keep", 3, 100.0, "{\"k\":1}").unwrap();
+
+        // Re-running boot migration must not drop or corrupt existing rows.
+        init_conn(&conn).unwrap();
+        let cp = get_queue_checkpoint(&conn).unwrap().unwrap();
+        assert_eq!(cp.snapshot_json, "{\"k\":1}");
+        assert!(cp.clean_exit);
+        let sessions = list_saved_sessions(&conn).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].name, "Keep");
+        // Singleton constraint still holds after re-init.
+        assert!(save_queue_checkpoint(&conn, "{\"k\":2}", 4, false).is_ok());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM queue_checkpoint", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
