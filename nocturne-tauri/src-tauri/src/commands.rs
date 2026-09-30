@@ -872,6 +872,52 @@ pub fn get_listening_stats(
     get_listening_stats_impl(&conn, &range)
 }
 
+/// Records one listening-history play session (Phase 01 · Feature 2).
+#[tauri::command]
+pub fn record_listening_history(
+    state: State<DbState>,
+    track_id: String,
+    title: String,
+    artist: String,
+    duration_secs: f64,
+    duration_listened_secs: f64,
+    status: String,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::insert_listening_history(
+        &conn,
+        &track_id,
+        &title,
+        &artist,
+        duration_secs,
+        duration_listened_secs,
+        &status,
+        None,
+    )?;
+    Ok(())
+}
+
+/// Most recent listening-history rows, newest first. `limit` defaults to
+/// `DEFAULT_HISTORY_LIMIT` and is clamped to `1..=MAX_HISTORY_LIMIT`.
+#[tauri::command]
+pub fn get_listening_history(
+    state: State<DbState>,
+    limit: Option<u32>,
+) -> Result<Vec<crate::db::HistoryEntry>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::get_recent_listening_history(&conn, limit.unwrap_or(crate::db::DEFAULT_HISTORY_LIMIT))
+}
+
+/// Total recorded play sessions for one track id.
+#[tauri::command]
+pub fn get_track_play_count(
+    state: State<DbState>,
+    track_id: String,
+) -> Result<u64, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::get_track_play_count(&conn, &track_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

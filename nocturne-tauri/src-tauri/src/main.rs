@@ -5,11 +5,11 @@ mod db;
 mod scanner;
 
 use commands::{
-    clear_library, deduplicate_library, delete_cached_lyrics, delete_track, get_listening_stats,
-    get_lyric_offset, get_lyrics, get_tracks, import_audio_files, ingest_paths,
-    open_music_folder, open_music_folder_via_file, pick_audio_files, pick_folder,
-    pick_folder_via_file, record_play, reveal_in_explorer, save_cached_lyrics, scan_folder,
-    set_lyric_offset,
+    clear_library, deduplicate_library, delete_cached_lyrics, delete_track, get_listening_history,
+    get_listening_stats, get_lyric_offset, get_lyrics, get_track_play_count, get_tracks,
+    import_audio_files, ingest_paths, open_music_folder, open_music_folder_via_file,
+    pick_audio_files, pick_folder, pick_folder_via_file, record_listening_history, record_play,
+    reveal_in_explorer, save_cached_lyrics, scan_folder, set_lyric_offset,
 };
 use db::{open_db, DbState};
 use std::sync::Mutex;
@@ -182,6 +182,9 @@ fn main() {
             delete_cached_lyrics,
             record_play,
             get_listening_stats,
+            record_listening_history,
+            get_listening_history,
+            get_track_play_count,
             get_lyric_offset,
             set_lyric_offset,
             reveal_in_explorer
