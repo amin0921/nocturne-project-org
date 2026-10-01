@@ -559,6 +559,13 @@ body::-webkit-scrollbar,
   .nocturne-shell {
     grid-template-columns: auto minmax(0, 1fr) 280px;
   }
+  /* 280px queue column: the nowrap tab strip (~139px without badges) fits
+     beside the floating window-controls pill reserve; with the two count
+     badges (~183px total) it overflows into the pill zone. Counts stay
+     visible at the full 320px island (viewport >= 1280px). */
+  .nq-tab-count {
+    display: none;
+  }
 }
 
 /* < 1024px: queue leaves grid and becomes a slide-over sheet */
@@ -1194,5 +1201,350 @@ body::-webkit-scrollbar,
   .sleep-badge-pop,
   .sleep-pill::after {
     animation: none !important;
+  }
+}
+
+/* ====================================================================
+ * Listening History — pane cross-fade, row surface, staggered mount.
+ * Composite properties only (transform / opacity); no layout triggers.
+ * ==================================================================== */
+
+/* Content swap: cross-fade between persistent Queue/History panes.
+   The animation restarts naturally when display toggles none -> block. */
+@keyframes nq-pane-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.nq-pane-fade {
+  animation: nq-pane-fade-in 180ms ease-out;
+}
+
+/* History row: obsidian surface with a subtle hover lift + amber border glow. */
+.history-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #121419;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  cursor: pointer;
+  transition:
+    transform 160ms cubic-bezier(0.32, 0.72, 0, 1),
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+  will-change: transform;
+}
+
+.history-row:hover {
+  transform: translateY(-1px);
+  border-color: rgba(234, 179, 8, 0.35);
+  box-shadow:
+    0 8px 20px rgba(0, 0, 0, 0.45),
+    0 0 10px rgba(234, 179, 8, 0.1);
+}
+
+.history-row:active {
+  transform: translateY(0);
+}
+
+/* Staggered mount: opacity 0 -> 1 + translateY(8px -> 0), delay capped at 8 rows. */
+@keyframes history-row-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.history-row-enter {
+  animation: history-row-enter 240ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(min(var(--row-index, 0), 7) * 30ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nq-pane-fade,
+  .history-row-enter {
+    animation: none !important;
+  }
+  .history-row {
+    transition: none !important;
+  }
+  .history-row:hover {
+    transform: none;
+  }
+}
+
+/* ====================================================================
+ * Queue Restore Banner — enter/exit transitions + 15s drain bar.
+ * Composite properties only (transform / opacity); no layout triggers.
+ * ==================================================================== */
+
+@keyframes restore-banner-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes restore-banner-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+}
+
+/* Absolute overlay centered inside the stage-area wrapper (App.tsx mounts it
+   as a second grid item in `grid-area: stage`, so the wrapper box is exactly
+   the center island). margin-auto centering keeps `transform` free for the
+   composite-only enter/exit animations; top insets the banner below the
+   island's top border instead of clinging to it. */
+.restore-banner {
+  position: absolute;
+  top: 0.75rem;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  margin-inline: auto;
+  width: fit-content;
+  max-width: min(560px, calc(100% - 2rem));
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px 16px;
+  background: #121419;
+  border: 1px solid #2e3648;
+  border-radius: 14px;
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(255, 255, 255, 0.04);
+  animation: restore-banner-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+}
+
+.restore-banner-exit {
+  animation: restore-banner-out 160ms ease-in forwards;
+}
+
+.restore-banner-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  color: #eab308;
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  border-radius: 10px;
+}
+
+/* 15s linear countdown drain (scaleX 1 -> 0, origin left). Hovering the
+   banner pauses expiry so slow readers never lose the offer. */
+@keyframes banner-drain {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+.restore-drain {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 7px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(234, 179, 8, 0.75);
+  transform-origin: left;
+  animation: banner-drain 15s linear forwards;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.restore-banner:hover .restore-drain {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Enter/exit only — the drain keeps running: it IS the expiry mechanism
+     (its animationend dismisses the banner). */
+  .restore-banner,
+  .restore-banner-exit {
+    animation: none !important;
+  }
+}
+
+/* ====================================================================
+ * Saved Sessions — dropdown mount, row surface, hold-to-confirm delete.
+ * Motion is composite-only; the fill bar animates width ONLY on the
+ * isolated ::before overlay (never the row layout).
+ * ==================================================================== */
+
+@keyframes session-dropdown-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Mount animation only — surface, border, geometry and elevation come from
+   Tailwind utilities on the element itself (see SessionManagerDropdown.tsx). */
+.session-popover-in {
+  transform-origin: top right;
+  animation: session-dropdown-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+}
+
+/* Exit: compositor-only fade+shrink (opacity/transform never touch layout),
+   so the heavy queue replacement running mid-exit cannot stutter the
+   dismissal — the card keeps fading on the GPU while the main thread is busy. */
+.session-popover-in[data-leaving='true'] {
+  animation: session-dropdown-out 140ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+
+@keyframes session-dropdown-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+/* Row: obsidian surface + hover elevation via surface/border shift only.
+   A translateY(-1px) lift gets its top border clipped by the list's
+   overflow-y scroll container (mid-scroll rows sit flush against the top
+   edge), so elevation comes from color, never movement. */
+/* Pure-CSS accordion for session panels (track picker, expanded session rows):
+   grid-template-rows 0fr -> 1fr transitions without JS measurement or any
+   animation library. The direct child must stay min-height:0 + overflow:hidden
+   so the collapsed row actually clips its content. */
+.session-accordion {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.session-accordion[data-open='true'] {
+  grid-template-rows: 1fr;
+}
+
+.session-accordion > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.session-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #121419;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  transition:
+    background-color 160ms cubic-bezier(0.32, 0.72, 0, 1),
+    border-color 160ms ease;
+}
+
+.session-row:hover {
+  background: #1a1e27;
+  border-color: rgba(234, 179, 8, 0.3);
+}
+
+.session-row-load {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+/* Hold-to-confirm delete: press & hold 600ms fills an isolated overlay. */
+.hold-delete {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  color: #a8b0be;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.hold-delete::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 0%;
+  background: rgba(226, 72, 72, 0.4);
+  /* No transition at rest: releasing early resets the fill instantly. */
+  transition: none;
+}
+
+.hold-delete:hover {
+  color: #e24848;
+  border-color: rgba(226, 72, 72, 0.45);
+}
+
+.hold-delete:active::before,
+.hold-delete.holding::before {
+  width: 100%;
+  transition: width 600ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-popover-in {
+    animation: none !important;
+  }
+  .session-popover-in[data-leaving='true'] {
+    animation: none !important;
+    opacity: 0;
+  }
+  .session-accordion {
+    transition: none !important;
+  }
+  .session-row {
+    transition: none !important;
   }
 }

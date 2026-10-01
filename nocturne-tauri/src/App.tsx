@@ -10,6 +10,7 @@ import { CinemaStage } from './components/cinema'
 import PlayerBar from './components/PlayerBar'
 import MicroDock from './components/MicroDock'
 import CenterIsland from './components/CenterIsland'
+import RestoreBanner from './components/sessions/RestoreBanner'
 import QueuePanel from './components/QueuePanel'
 import QueueSheet from './components/QueueSheet'
 import TrackContextMenu from './components/TrackContextMenu'
@@ -540,6 +541,12 @@ export default function App(): JSX.Element {
     setTrackMenu({ track, x: e.clientX, y: e.clientY })
   }, [])
 
+  // History rows are path-keyed; map them back to full library tracks.
+  const resolveLibraryTrack = useCallback(
+    (path: string) => tracks.find((t) => t.path === path),
+    [tracks]
+  )
+
   const closeTrackMenu = useCallback(() => setTrackMenu(null), [])
 
   const columns: DataColumn<PlayerTrack>[] = [
@@ -1038,6 +1045,15 @@ export default function App(): JSX.Element {
           </ErrorBoundary>
         </div>
 
+        {/* Crash / session restore banner — placed as a second grid item in
+            the stage area, so its containing box IS the center island: the
+            banner centers over the island regardless of dock width and can
+            inset from the island's top edge. pointer-events stays off at the
+            wrapper level; .restore-banner re-enables it for itself. */}
+        <div className="pointer-events-none relative z-40 [grid-area:stage]">
+          <RestoreBanner />
+        </div>
+
         {/* Center Island (Cinematic Stage or Library) */}
         <section
           className={cn(
@@ -1066,7 +1082,7 @@ export default function App(): JSX.Element {
           aria-hidden={isCoverViewOpen}
         >
           <ErrorBoundary fallbackTitle="Queue Error">
-            <QueuePanel onTrackContextMenu={handleTrackContextMenu} />
+            <QueuePanel onTrackContextMenu={handleTrackContextMenu} resolveTrack={resolveLibraryTrack} />
           </ErrorBoundary>
         </aside>
 
@@ -1086,7 +1102,7 @@ export default function App(): JSX.Element {
         </footer>
 
         {/* Responsive Slide-Over Sheet for screens < 1024px */}
-        <QueueSheet onTrackContextMenu={handleTrackContextMenu} />
+        <QueueSheet onTrackContextMenu={handleTrackContextMenu} resolveTrack={resolveLibraryTrack} />
 
         {/* 3D CoverFlow Carousel Modal */}
         {isCoverViewOpen && (
