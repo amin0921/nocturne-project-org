@@ -46,7 +46,11 @@ struct ScanProgressPayload {
 /// Native folder picker dialog. Returns Some(path) or None if user cancels.
 #[tauri::command]
 pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
-    let picked = app.dialog().file().blocking_pick_folder();
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Select your music folder")
+        .blocking_pick_folder();
     let Some(file_path) = picked else {
         return Ok(None);
     };
@@ -54,9 +58,12 @@ pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
-/// Audio extension allowlist for the folder-picking dialog — mirrors
-/// `scanner::SUPPORTED_EXTS` so the picker opens with audio tracks visible.
-const PICK_FOLDER_EXTS: &[&str] = &["mp3", "wav", "m4a", "aac"];
+/// Audio extension allowlist for the folder-picking dialog. `flac` is listed
+/// so FLAC libraries surface in the picker: picking a FLAC resolves its parent
+/// folder as the scan root (the walk itself still imports only
+/// `scanner::SUPPORTED_EXTS`, so FLAC files are catalogued-then-skipped, and
+/// the sibling mp3/wav/m4a/aac tracks import normally).
+const PICK_FOLDER_EXTS: &[&str] = &["mp3", "wav", "m4a", "aac", "flac"];
 
 /// Resolves the ingest root for the "Add Folder" flow.
 ///
@@ -100,16 +107,18 @@ pub fn resolve_folder_root(raw: &str) -> Result<PathBuf, String> {
 
 /// Native audio file picker for the "Add Folder" button.
 ///
-/// Windows' folder-only dialog cannot display files, so the approved UX is:
-/// show the supported audio tracks (.mp3/.wav/.m4a/.aac) and let the user pick
-/// any single one — its containing folder is then scanned recursively, exactly
-/// as `pick_folder` + `scan_folder` did before. Returns None if user cancels.
+/// The native folder-only dialog hides every file inside the directory ("No
+/// items match your search"), which reads as broken. The approved UX is:
+/// show the supported audio tracks (.mp3/.wav/.m4a/.aac/.flac) with an
+/// explicit title, let the user pick any single one inside the target folder —
+/// its containing folder is then scanned recursively via `scan_folder`.
+/// Returns None if user cancels.
 #[tauri::command]
 pub async fn pick_folder_via_file(app: AppHandle) -> Result<Option<String>, String> {
     let picked = app
         .dialog()
         .file()
-        .set_title("Select your music folder (choose any audio file inside it)")
+        .set_title("Select any music file in folder to import entire folder")
         .add_filter("Audio Files", PICK_FOLDER_EXTS)
         .add_filter("All Files", &["*"])
         .blocking_pick_file();
@@ -237,7 +246,18 @@ pub async fn import_audio_files(app: AppHandle, file_paths: Vec<String>) -> Resu
 
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DbState>();
-        import_files_into_db(&state, &files, Some(&covers_dir))
+        let emitter = app.clone();
+        import_files_into_db(
+            &state,
+            &files,
+            Some(&covers_dir),
+            Some(&mut |done, total| {
+                let _ = emitter.emit(
+                    "scan-progress",
+                    ScanProgressPayload { scanned: done, total },
+                );
+            }),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -288,10 +308,17 @@ pub async fn ingest_paths(app: AppHandle, paths: Vec<String>) -> Result<ImportRe
 
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DbState>();
+        let emitter = app.clone();
         let mut inserted = 0usize;
         let mut skipped = 0usize;
+        let mut progress_emitter = move |done: usize, total: usize| {
+            let _ = emitter.emit(
+                "scan-progress",
+                ScanProgressPayload { scanned: done, total },
+            );
+        };
         for folder in &folders {
-            match scan_folder_into_db_full(&state, folder, Some(&covers_dir), None) {
+            match scan_folder_into_db_full(&state, folder, Some(&covers_dir), Some(&mut progress_emitter)) {
                 Ok(o) => {
                     inserted += o.inserted;
                     skipped += o.skipped;
@@ -300,7 +327,7 @@ pub async fn ingest_paths(app: AppHandle, paths: Vec<String>) -> Result<ImportRe
             }
         }
         if !files.is_empty() {
-            match import_files_into_db(&state, &files, Some(&covers_dir)) {
+            match import_files_into_db(&state, &files, Some(&covers_dir), Some(&mut progress_emitter)) {
                 Ok(o) => {
                     inserted += o.inserted;
                     skipped += o.skipped;
@@ -918,6 +945,14 @@ pub fn get_track_play_count(
     crate::db::get_track_play_count(&conn, &track_id)
 }
 
+/// Wipe the entire listening history (History panel "Clear History"). Returns
+/// the number of rows removed.
+#[tauri::command]
+pub fn clear_listening_history(state: State<DbState>) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::clear_listening_history(&conn)
+}
+
 // ---------------- Queue checkpoint & saved sessions (Phase 01 · Feature 3) ----------------
 
 /// UPSERT the singleton playback checkpoint. `cleanExit` defaults to false so
@@ -984,6 +1019,13 @@ pub fn list_saved_sessions(
 pub fn delete_named_session(state: State<DbState>, id: i64) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     crate::db::delete_named_session(&conn, id)
+}
+
+/// Snapshot payload of one named session (null when the id is unknown).
+#[tauri::command]
+pub fn get_named_session(state: State<DbState>, id: i64) -> Result<Option<String>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    crate::db::get_named_session_snapshot(&conn, id)
 }
 
 #[cfg(test)]

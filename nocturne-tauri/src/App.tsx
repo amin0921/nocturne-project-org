@@ -636,10 +636,11 @@ export default function App(): JSX.Element {
 
   const addFolder = useCallback(async () => {
     try {
-      // 1. Guard dialog: the Windows folder-only picker hides every file, which
-      // makes a music folder look empty. The approved UX opens an audio-filtered
-      // file dialog instead — the user sees the supported tracks and picks any
-      // one of them; Rust then resolves its parent folder as the scan root.
+      // 1. Guard dialog: the native FOLDER picker hides every file inside the
+      // directory ("No items match your search"), which reads as broken to the
+      // user. The approved UX opens an audio-filtered FILE dialog instead: the
+      // user sees their tracks, picks any one inside the target folder, and
+      // Rust resolves its parent as the recursive scan root.
       // No UI state mutations happen until a file is actually chosen.
       const picked = await invoke<string | null>('pick_folder_via_file')
       if (!picked) {
@@ -648,7 +649,8 @@ export default function App(): JSX.Element {
       }
 
       // 2. File confirmed: activate scanning state and live feedback. The Rust
-      // side resolves the parent folder of the picked track and scans it.
+      // side (`resolve_folder_root`) resolves the picked track's parent folder
+      // and scans it recursively — `scan_folder` accepts both forms.
       setScanning(true)
       setNotice('Scanning audio files...')
       setScanProgress(null)
@@ -677,16 +679,18 @@ export default function App(): JSX.Element {
     }
   }, [reload])
 
+  /** Header counter while ingesting: live X/Y numbers, never a frozen string. */
   const scanLabel = useMemo(() => {
     if (scanProgress && scanProgress.total > 0) {
-      return `Scanning (${scanProgress.scanned}/${scanProgress.total})`
+      return `Scanning ${scanProgress.scanned}/${scanProgress.total}`
     }
     return 'Scanning…'
   }, [scanProgress])
 
   // "Add Files": native multi-select file dialog (not a folder picker), so every
   // audio track is visible in Explorer with name/size before selection. Backend
-  // picks the dialog (`pick_audio_files`) and indexes the paths (`import_audio_files`).
+  // picks the dialog (`pick_audio_files`) and indexes the paths (`import_audio_files`),
+  // emitting `scan-progress` per parsed file for live numeric feedback.
   const addFiles = useCallback(async () => {
     try {
       // 1. Guard dialog: no UI state mutations until files are actually chosen
@@ -703,9 +707,20 @@ export default function App(): JSX.Element {
         `Importing ${selected.length} selected file${selected.length === 1 ? '' : 's'}...`
       )
 
-      const result = await invoke<ImportResultDto>('import_audio_files', { filePaths: selected })
-      setNotice(describeImport(result))
-      await reload()
+      const unlisten = await listen<{ scanned: number; total: number }>('scan-progress', (event) => {
+        setScanProgress(event.payload)
+        if (event.payload && event.payload.total > 0) {
+          setNotice(`Importing ${event.payload.scanned} / ${event.payload.total} tracks...`)
+        }
+      })
+
+      try {
+        const result = await invoke<ImportResultDto>('import_audio_files', { filePaths: selected })
+        setNotice(describeImport(result))
+        await reload()
+      } finally {
+        unlisten()
+      }
     } catch (err) {
       console.error('[Import files error]:', err)
       setNotice(`Import failed: ${String(err)}`)
@@ -728,9 +743,19 @@ export default function App(): JSX.Element {
       setScanProgress(null)
       setNotice(`Adding ${paths.length} dropped item${paths.length === 1 ? '' : 's'}…`)
       try {
-        const result = await invoke<ImportResultDto>('ingest_paths', { paths })
-        setNotice(describeImport(result))
-        await reload()
+        const unlisten = await listen<{ scanned: number; total: number }>('scan-progress', (event) => {
+          setScanProgress(event.payload)
+          if (event.payload && event.payload.total > 0) {
+            setNotice(`Importing ${event.payload.scanned} / ${event.payload.total} tracks...`)
+          }
+        })
+        try {
+          const result = await invoke<ImportResultDto>('ingest_paths', { paths })
+          setNotice(describeImport(result))
+          await reload()
+        } finally {
+          unlisten()
+        }
       } catch (err) {
         setNotice(`Could not add dropped items: ${String(err)}`)
       } finally {
@@ -880,7 +905,7 @@ export default function App(): JSX.Element {
           className="max-w-md flex-1"
         />
         <span className="shrink-0 text-[11px] uppercase tracking-wider text-faint numeric">
-          {scanning ? 'Scanning…' : countText}
+          {scanning ? scanLabel : countText}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-2">
           <button

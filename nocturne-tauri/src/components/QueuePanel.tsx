@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Disc3, Dot, GripVertical, ListMusic, ListOrdered, X, Zap } from 'lucide-react'
+import { Disc3, Dot, GripVertical, ListMusic, ListOrdered, Trash2, X, Zap } from 'lucide-react'
 import {
+  clearQueueWithUndo,
   playTrackAt,
   queueItemId,
   removeFromPriorityQueue,
+  removeQueuedRow,
+  restoreQueueSnapshot,
   setQueueOrder,
   usePlayerStore,
   type PlayerTrack
@@ -14,6 +17,7 @@ import { cn } from '../lib/utils'
 import { formatTime, type Track } from '../types/player'
 import { EqBars } from './EqBars'
 import { AudioSpecsView } from './AudioSpecsView'
+import { EmptyState } from './empty/EmptyState'
 import { QueueTabs } from './queue/QueueTabs'
 import { UndoToast } from './queue/UndoToast'
 import { useQueueUndo, type QueueSnapshot } from './queue/useQueueUndo'
@@ -22,8 +26,8 @@ import { SessionManagerDropdown } from './sessions/SessionManagerDropdown'
 import { captureFlipRects, playFlip, type FlipRects } from './queue/flipList'
 import './queue/queue-styles.css'
 
-/** Mirrors the toast exit transition so the ghost unmounts exactly with it (320ms). */
-const TOAST_EXIT_MS = 320
+/** Mirrors the toast exit transition so the ghost unmounts exactly with it (180ms). */
+const TOAST_EXIT_MS = 180
 
 /** Warm the browser cache for upcoming track covers so stage swap never flashes. */
 function usePreloadCovers(tracks: PlayerTrack[]): void {
@@ -36,16 +40,6 @@ function usePreloadCovers(tracks: PlayerTrack[]): void {
       }
     })
   }, [tracks])
-}
-
-function EmptyState({ icon, text, hint }: { icon: React.ReactNode; text: string; hint?: string }): JSX.Element {
-  return (
-    <div className="nq-empty">
-      <span className="nq-empty-badge">{icon}</span>
-      <p className="font-medium">{text}</p>
-      {hint && <p className="text-[11px] opacity-70">{hint}</p>}
-    </div>
-  )
 }
 
 export interface QueuePanelProps {
@@ -237,7 +231,28 @@ export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrac
     [captureFlip]
   )
 
-  const { snapshot, beginReorder, undo, dismiss, windowMs } = useQueueUndo(restoreOrder)
+  const { snapshot, begin, undo, dismiss, windowMs } = useQueueUndo()
+
+  /** Undoable removal of one context row: snapshot → mutate → toast. */
+  const removeRow = useCallback(
+    (queueId: string): void => {
+      const snap = removeQueuedRow(queueId)
+      if (!snap) return
+      begin({ label: 'Removed track from queue', restore: () => restoreQueueSnapshot(snap) })
+    },
+    [begin]
+  )
+
+  /** Undoable full clear (both tiers): snapshot → wipe → toast. */
+  const clearQueueUndoable = useCallback((): void => {
+    const snap = clearQueueWithUndo()
+    if (!snap) return
+    const count = snap.tracks.length + snap.priorityQueue.length
+    begin({
+      label: count === 1 ? 'Cleared queue (1 track)' : `Cleared queue (${count} tracks)`,
+      restore: () => restoreQueueSnapshot(snap)
+    })
+  }, [begin])
 
   // INVERT + PLAY: runs after React commits the new DOM order, before paint.
   useLayoutEffect(() => {
@@ -308,13 +323,14 @@ export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrac
       const from = order.indexOf(id)
       const to = from + delta
       if (from < 0 || to < 0 || to >= order.length) return
-      beginReorder(order, 'Reordered')
-      order.splice(from, 1)
-      order.splice(to, 0, id)
+      begin({ label: 'Reordered', restore: () => restoreOrder(order) })
+      const newOrder = [...order]
+      newOrder.splice(from, 1)
+      newOrder.splice(to, 0, id)
       captureFlip()
-      setQueueOrder(order)
+      setQueueOrder(newOrder)
     },
-    [queue, beginReorder, captureFlip]
+    [queue, begin, captureFlip, restoreOrder]
   )
 
   const onRowKeyDown = useCallback(
@@ -353,6 +369,17 @@ export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrac
           roughly y=12..50 in the shell; this row starts at y≈72), so overlap is
           impossible by construction regardless of island width. */}
       <div className="flex h-9 shrink-0 items-center justify-end gap-1 border-b border-white/5 px-2">
+        {activeTab === 'queue' && (queue.length > 0 || priorityQueue.length > 0) && (
+          <button
+            type="button"
+            onClick={clearQueueUndoable}
+            className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-[11px] font-medium text-faint transition-colors hover:bg-white/10 hover:text-ink focus-visible:outline-none"
+            aria-label="Clear queue"
+          >
+            <Trash2 size={13} aria-hidden />
+            <span>Clear Queue</span>
+          </button>
+        )}
         <SessionManagerDropdown />
         {onClose && (
           <button
@@ -386,15 +413,15 @@ export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrac
           aria-hidden={activeTab !== 'queue'}
           data-dragging={dragState !== null}
           className={cn(
-            'nocturne-scroll nq-list nq-pane-fade min-h-0 flex-1 overflow-y-auto p-2',
+            'nocturne-scroll nq-list nq-pane-fade min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-2',
             activeTab === 'queue' ? 'block' : 'hidden'
           )}
         >
             {queue.length === 0 && priorityQueue.length === 0 ? (
               <EmptyState
                 icon={<ListMusic size={20} aria-hidden />}
-                text="Queue is empty"
-                hint="Add tracks from the library to queue them."
+                title="Queue is empty"
+                description="Add tracks from your library or stage to start listening"
               />
             ) : (
               <>
@@ -521,6 +548,8 @@ export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrac
                       key={key}
                       data-flip={key}
                       data-track-id={key}
+                      data-queue-id={t.queueId}
+                      data-library-id={t.id}
                       data-dragging={isDragging}
                       data-settling={isSettling}
                       data-drop-target={isDropTarget}
@@ -540,7 +569,7 @@ export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrac
                         ref={isActive ? activeItemRef : undefined}
                         type="button"
                         className={cn(
-                          'nq-row rounded-xl',
+                          'nq-row rounded-xl group',
                           isDragging &&
                             'absolute inset-x-0 top-0 z-[9999] rounded-xl overflow-hidden bg-[#161922] border border-amber-500/50 shadow-[0_20px_50px_rgba(0,0,0,0.85)] pointer-events-none select-none scale-[1.02]'
                         )}
@@ -631,7 +660,7 @@ export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrac
                             const movedId = state.id
                             if (startIndex !== currentIndex) {
                               const currentOrder = queue.map(queueItemId)
-                              beginReorder(currentOrder, 'Reordered')
+                              begin({ label: 'Reordered', restore: () => restoreOrder(currentOrder) })
 
                               const newOrder = [...currentOrder]
                               newOrder.splice(startIndex, 1)
@@ -682,6 +711,24 @@ export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrac
                         </span>
                         {isActive && <EqBars isPlaying={isPlaying} />}
                         <span className="time numeric">{formatTime(t.duration_secs)}</span>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`Remove ${t.title} from queue`}
+                          className="pointer-events-auto flex shrink-0 cursor-pointer rounded p-1 text-faint opacity-0 transition-opacity hover:text-red-400 focus-visible:opacity-100 focus-visible:text-red-400 group-hover:opacity-100 group-focus-within:opacity-100"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            removeRow(key)
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key !== 'Enter' && e.key !== ' ') return
+                            e.preventDefault()
+                            e.stopPropagation()
+                            removeRow(key)
+                          }}
+                        >
+                          <Trash2 size={13} aria-hidden />
+                        </span>
                       </button>
                     </li>
                   )
