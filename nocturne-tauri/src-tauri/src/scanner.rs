@@ -8,7 +8,7 @@ use rusqlite::{params, OptionalExtension};
 use std::hash::{DefaultHasher, Hasher};
 use std::path::{Path, PathBuf};
 
-use crate::db::{now_ms, DbState};
+use crate::db::{now_ms, DbState, GENERIC_TITLE_LIST};
 
 /// Strip `\\?\` verbatim prefixes (`\\?\C:\...`, `\\?\UNC\server\...`) so
 /// stored paths stay in plain display form for URL building.
@@ -281,21 +281,95 @@ ON CONFLICT(file_path) DO UPDATE SET
   cover_url = COALESCE(excluded.cover_url, tracks.cover_url)
 ";
 
+/// What one ingestion pass did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImportOutcome {
+    /// Rows newly added to the library.
+    pub inserted: usize,
+    /// Files recognised as already-present under a different path and skipped.
+    pub skipped: usize,
+}
+
+/// True when a row that is ALREADY catalogued and still present on disk is the
+/// same piece of music as `track`, reached by a different path.
+///
+/// Mirrors the dedup predicate in `db.rs`. Identity must be corroborated -- a
+/// real title+artist match, or a byte-size match where one side is untagged --
+/// because duration alone and byte size alone are both too weak (a track and
+/// its own edit share both).
+///
+/// Duration is a SOFT gate: when both sides know it they must agree within
+/// 1.0s, but a file whose duration the tag reader could not measure is still
+/// deduplicated on identity. Gating on duration unconditionally would silently
+/// disable deduplication for exactly those files.
+///
+/// The same path never matches itself, and a `missing = 1` row never blocks, so
+/// deleting a primary file lets its backup be indexed on the next pass.
+fn content_duplicate_exists(
+    conn: &rusqlite::Connection,
+    db_path: &str,
+    track: &ScannedTrack,
+) -> Result<bool, String> {
+    let duration: Option<f64> = track.duration_secs.filter(|d| d.is_finite() && *d > 0.0);
+    let incoming_generic = crate::db::is_generic_title(&track.title);
+    let sql = format!(
+        "SELECT 1 FROM tracks
+          WHERE file_path <> ?1
+            AND missing = 0
+            AND (
+              (
+                NOT (?3)
+                AND LOWER(TRIM(title)) = LOWER(TRIM(?4))
+                AND LOWER(TRIM(artist)) = LOWER(TRIM(?5))
+              )
+              OR (
+                file_size IS NOT NULL
+                AND ?6 IS NOT NULL
+                AND file_size = ?6
+                AND (?3 OR LOWER(TRIM(title)) IN ({GENERIC_TITLE_LIST}))
+              )
+            )
+            AND (?2 IS NULL OR duration_secs IS NULL OR ABS(duration_secs - ?2) <= 1.0)
+          LIMIT 1"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let hit: Option<i64> = stmt
+        .query_row(
+            params![
+                db_path,
+                duration,
+                incoming_generic,
+                track.title.trim(),
+                track.artist.trim(),
+                track.file_size,
+            ],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(hit.is_some())
+}
+
 pub fn scan_folder_into_db(
     state: &DbState,
     root: &Path,
     progress: Option<&mut dyn FnMut(usize, usize)>,
 ) -> Result<usize, String> {
-    scan_folder_into_db_with_covers(state, root, None, progress)
+    let outcome = scan_folder_into_db_full(state, root, None, progress)?;
+    Ok(outcome.inserted)
 }
 
-/// Scan one canonical folder into the DB with cover extraction.
-pub fn scan_folder_into_db_with_covers(
+/// Full-result folder scan: reports both inserted and deduplicated-skip counts.
+///
+/// Overlapping folders are the common duplication source (the same album under
+/// `H:\songs` and a Telegram download folder), so the content check runs on
+/// every newly-seen file here, not just on explicit file imports.
+pub fn scan_folder_into_db_full(
     state: &DbState,
     root: &Path,
     covers_dir: Option<&Path>,
     mut progress: Option<&mut dyn FnMut(usize, usize)>,
-) -> Result<usize, String> {
+) -> Result<ImportOutcome, String> {
     let now = now_ms();
     let mut conn = state.0.lock().map_err(|e| e.to_string())?;
     // Store display (non-verbatim) paths: `canonicalize()` yields `\\?\...`
@@ -320,6 +394,7 @@ pub fn scan_folder_into_db_with_covers(
         cb(0, total);
     }
     let mut upserted = 0usize;
+    let mut skipped = 0usize;
     let mut done = 0usize;
     for batch in files.chunks(BATCH_SIZE) {
         let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -351,6 +426,13 @@ pub fn scan_folder_into_db_with_covers(
                     params![now, db_path],
                 )
                 .map_err(|e| e.to_string())?;
+                continue;
+            }
+            // Content dedup: a present row under a DIFFERENT path that is the
+            // same song (duration + byte size, or duration + real title/artist)
+            // already covers this file, so do not add a second library row.
+            if content_duplicate_exists(&tx, &db_path, &track)? {
+                skipped += 1;
                 continue;
             }
             tx.execute(
@@ -385,26 +467,42 @@ pub fn scan_folder_into_db_with_covers(
         params![now, folder_id],
     )
     .map_err(|e| e.to_string())?;
-    Ok(upserted)
+    Ok(ImportOutcome { inserted: upserted, skipped })
 }
 
-/// Index explicitly user-selected files (native "Add Files" picker) into the DB.
+/// Index explicitly user-selected files (native "Add Files" picker, or files
+/// dropped onto the window) into the DB.
 /// No recursion and no missing-sweep: each path is validated (`..` rejected,
 /// canonicalized, must exist and pass `is_supported`) and upserted under its own
 /// parent folder row so a later folder scan dedupes by `file_path`.
-/// Returns the count of newly indexed tracks — already-catalogued files refresh
-/// their metadata but are not counted again.
+/// Returns inserted and deduplicated-skip counts; a re-import of the same file
+/// refreshes metadata but is counted as neither.
+///
+/// `progress` fires `(done, total)` once up-front and once per attempted file,
+/// exactly like the folder scan's callback, so the UI can show live numeric
+/// "Importing X / Y..." feedback for multi-file imports.
 pub fn import_files_into_db(
     state: &DbState,
     files: &[PathBuf],
     covers_dir: Option<&Path>,
-) -> Result<usize, String> {
+    mut progress: Option<&mut dyn FnMut(usize, usize)>,
+) -> Result<ImportOutcome, String> {
     let now = now_ms();
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let mut folder_ids: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     let mut imported = 0usize;
+    let mut skipped = 0usize;
+    let total = files.len();
+    if let Some(cb) = progress.as_mut() {
+        cb(0, total);
+    }
+    let mut done = 0usize;
 
     for raw in files {
+        done += 1;
+        if let Some(cb) = progress.as_mut() {
+            cb(done, total);
+        }
         // IPC-side guard: no parent traversal ever reaches the filesystem.
         if raw.to_string_lossy().contains("..") {
             continue;
@@ -459,6 +557,12 @@ pub fn import_files_into_db(
             .optional()
             .map_err(|e| e.to_string())?
             .is_some();
+        // Already catalogued under this exact path: refresh only, count nothing.
+        // Not a "duplicate" in the user-facing sense, so not a skip either.
+        if !exists && content_duplicate_exists(&conn, &db_path, &track)? {
+            skipped += 1;
+            continue;
+        }
         conn.execute(
             UPSERT_SQL,
             params![
@@ -480,7 +584,7 @@ pub fn import_files_into_db(
             imported += 1;
         }
     }
-    Ok(imported)
+    Ok(ImportOutcome { inserted: imported, skipped })
 }
 
 #[cfg(test)]
@@ -674,6 +778,49 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn import_files_reports_progress_to_total() {
+        let src = fixture_music_dir();
+        if !src.join("tagged.mp3").exists() {
+            return;
+        }
+        let dir = unique_dir("import-progress");
+        let mut picked: Vec<PathBuf> = Vec::new();
+        for entry in fs::read_dir(&src).unwrap().flatten() {
+            let dest = dir.join(entry.file_name());
+            fs::copy(entry.path(), &dest).unwrap();
+            picked.push(dest);
+        }
+        let conn = Connection::open(dir.join("test.db")).unwrap();
+        crate::db::init_conn(&conn).unwrap();
+        let state = DbState(Mutex::new(conn));
+        let mut events: Vec<(usize, usize)> = Vec::new();
+        let outcome = import_files_into_db(
+            &state,
+            &picked,
+            None,
+            Some(&mut |done, total| events.push((done, total))),
+        )
+        .expect("import failed");
+        assert!(outcome.inserted >= 3, "expected >=3 imports");
+        assert!(!events.is_empty(), "progress must fire");
+        assert_eq!(
+            events.first().copied(),
+            Some((0, picked.len())),
+            "progress must start at 0/total"
+        );
+        assert_eq!(
+            *events.last().unwrap(),
+            (picked.len(), picked.len()),
+            "progress must end at total/total"
+        );
+        for pair in events.windows(2) {
+            assert!(pair[1].0 >= pair[0].0, "progress must be monotonic");
+        }
+        drop(state);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Real-world probe: point NOCTURNE_PROBE_DIR at any music folder to time
     /// the exact production scan path (walk + lofty + SQLite) headlessly.
     /// Skipped when the env var is unset. Never writes outside a temp DB.
@@ -753,8 +900,9 @@ mod tests {
             dir.join("..").join("escape.mp3"), // `..` guard rejects before fs access
             dir.join("ghost.mp3"),             // never written: canonicalize fails
         ];
-        let n = import_files_into_db(&state, &picked, None).unwrap();
-        assert_eq!(n, 1, "only the supported, existing file is indexed");
+        let n = import_files_into_db(&state, &picked, None, None).unwrap();
+        assert_eq!(n.inserted, 1, "only the supported, existing file is indexed");
+        assert_eq!(n.skipped, 0, "nothing to deduplicate on a first import");
 
         let rows: i64 = state
             .0
@@ -780,10 +928,210 @@ mod tests {
         assert_eq!(folder_path, expected_folder, "parent folder must be registered");
 
         // Re-importing the same file refreshes metadata but is not "new".
-        let n2 = import_files_into_db(&state, std::slice::from_ref(&good), None).unwrap();
-        assert_eq!(n2, 0);
+        let n2 = import_files_into_db(&state, std::slice::from_ref(&good), None, None).unwrap();
+        assert_eq!(n2.inserted, 0);
+        assert_eq!(n2.skipped, 0, "same path is a refresh, not a duplicate skip");
 
         drop(state);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Build a real file so `read_metadata` has something to read. Prefers the
+    /// ID3 fixture (real tags, real duration); falls back to opaque bytes, in
+    /// which case duration is unknown and the content check must decline to
+    /// match rather than guess.
+    fn tagged_file(dir: &Path, name: &str) -> PathBuf {
+        fs::create_dir_all(dir).unwrap();
+        let dest = dir.join(name);
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("data")
+            .join("fixtures")
+            .join("music")
+            .join("tagged.mp3");
+        if fixture.exists() {
+            fs::copy(&fixture, &dest).unwrap();
+        } else {
+            fs::write(&dest, b"not real audio").unwrap();
+        }
+        dest
+    }
+
+    fn insert_row(
+        conn: &Connection,
+        path: &str,
+        title: &str,
+        artist: &str,
+        duration: f64,
+        size: i64,
+        missing: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO tracks (file_path, title, artist, album, duration_secs, file_size, missing, date_added, last_seen_at)
+             VALUES (?1, ?2, ?3, 'Album', ?4, ?5, ?6, 1, 1)",
+            params![path, title, artist, duration, size, missing],
+        )
+        .unwrap();
+    }
+
+    fn count_tracks(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get(0)).unwrap()
+    }
+
+    fn paths(conn: &Connection) -> Vec<String> {
+        conn.prepare("SELECT file_path FROM tracks ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn deduplicate_keeps_lowest_id_and_spares_distinct_songs() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::init_conn(&conn).unwrap();
+        insert_row(&conn, "C:\\a.mp3", "Song", "Art", 100.0, 5000, 0);
+        insert_row(&conn, "C:\\b.mp3", "Song", "Art", 100.4, 5000, 0);
+        insert_row(&conn, "C:\\c.mp3", "Song", "Art", 99.6, 5000, 0);
+        // Different size AND different title: a genuinely different song.
+        insert_row(&conn, "C:\\d.mp3", "Other", "Art", 100.0, 9999, 0);
+        // Same size+duration but a real, different title: still a distinct song.
+        insert_row(&conn, "C:\\e.mp3", "Third", "Art", 100.0, 5000, 0);
+
+        assert_eq!(count_tracks(&conn), 5);
+        let out = crate::db::deduplicate_tracks(&conn).unwrap();
+        assert_eq!(out.purged, 2, "only the two true duplicates go");
+        assert_eq!(out.purged_paths.len(), 2, "every purge is auditable");
+        assert_eq!(paths(&conn), vec!["C:\\a.mp3", "C:\\d.mp3", "C:\\e.mp3"]);
+        // Idempotent.
+        assert_eq!(crate::db::deduplicate_tracks(&conn).unwrap().purged, 0);
+    }
+
+    #[test]
+    fn deduplicate_lets_a_present_file_beat_a_missing_duplicate() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::init_conn(&conn).unwrap();
+        // Primary vanished from disk; the backup copy is real and playable.
+        insert_row(&conn, "C:\\primary.mp3", "Song", "Art", 120.0, 7000, 1);
+        insert_row(&conn, "C:\\backup.mp3", "Song", "Art", 120.0, 7000, 0);
+
+        assert_eq!(crate::db::deduplicate_tracks(&conn).unwrap().purged, 1);
+        assert_eq!(paths(&conn), vec!["C:\\backup.mp3"], "a ghost must not shadow a real file");
+    }
+
+    #[test]
+    fn dedup_never_matches_on_placeholder_titles_alone() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::init_conn(&conn).unwrap();
+        // Two different untagged files: same duration, different sizes.
+        insert_row(&conn, "C:\\x.mp3", "Unknown Title", "Unknown Artist", 90.0, 111, 0);
+        insert_row(&conn, "C:\\y.mp3", "Unknown Title", "Unknown Artist", 90.0, 222, 0);
+        assert_eq!(
+            crate::db::deduplicate_tracks(&conn).unwrap().purged,
+            0,
+            "a placeholder title is not an identity"
+        );
+        assert_eq!(count_tracks(&conn), 2);
+    }
+
+    #[test]
+    fn dedup_migration_runs_exactly_once_but_manual_purge_still_works() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::init_conn(&conn).unwrap();
+        insert_row(&conn, "C:\\p.mp3", "Song", "Art", 100.0, 4242, 0);
+        insert_row(&conn, "C:\\q.mp3", "Song", "Art", 100.0, 4242, 0);
+
+        // init_conn already consumed the one-shot migration on this DB.
+        assert!(
+            crate::db::run_dedup_migration(&conn).unwrap().is_none(),
+            "the marker is set, so the migration must not fire again"
+        );
+        assert_eq!(count_tracks(&conn), 2, "a repeat migration must not purge");
+        // The manual command path is not marker-gated, so it still works.
+        assert_eq!(crate::db::deduplicate_tracks(&conn).unwrap().purged, 1);
+        assert_eq!(count_tracks(&conn), 1);
+    }
+
+    #[test]
+    fn import_files_skips_a_duplicate_reached_by_a_different_path() {
+        let src = fixture_music_dir();
+        if !src.join("tagged.mp3").exists() {
+            return; // fixtures are dev-only; never fail CI without them
+        }
+        // Same song, two folders, and a different filename on the copy.
+        let parent = unique_dir("impdup");
+        let a = tagged_file(&parent.join("a"), "song.mp3");
+        let b = tagged_file(&parent.join("b"), "song (1).mp3");
+
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::init_conn(&conn).unwrap();
+        let state = DbState(Mutex::new(conn));
+
+        let first = import_files_into_db(&state, std::slice::from_ref(&a), None, None).unwrap();
+        assert_eq!((first.inserted, first.skipped), (1, 0));
+
+        let second = import_files_into_db(&state, std::slice::from_ref(&b), None, None).unwrap();
+        assert_eq!(
+            (second.inserted, second.skipped),
+            (0, 1),
+            "a byte-identical copy must not become a second library row"
+        );
+        assert_eq!(count_tracks(&state.0.lock().unwrap()), 1);
+
+        // Re-importing the SAME path is a metadata refresh, not a skip.
+        let again = import_files_into_db(&state, std::slice::from_ref(&a), None, None).unwrap();
+        assert_eq!((again.inserted, again.skipped), (0, 0));
+
+        drop(state);
+        fs::remove_dir_all(&parent).unwrap();
+    }
+
+    #[test]
+    fn overlapping_folder_scan_does_not_duplicate_tracks() {
+        let src = fixture_music_dir();
+        if !src.join("tagged.mp3").exists() {
+            return; // fixtures are dev-only; never fail CI without them
+        }
+        // Two SIBLING folders holding the same songs. (A nested child would be
+        // walked by the first scan itself and prove nothing about overlap.)
+        let parent = unique_dir("overlap");
+        let primary = parent.join("primary");
+        let overlap = parent.join("overlap");
+        fs::create_dir_all(&primary).unwrap();
+        fs::create_dir_all(&overlap).unwrap();
+        for entry in fs::read_dir(&src).unwrap().flatten() {
+            let name = entry.file_name();
+            fs::copy(entry.path(), primary.join(&name)).unwrap();
+            fs::copy(entry.path(), overlap.join(&name)).unwrap();
+        }
+        // Rename one copy so the duplicate is reached by a genuinely different
+        // path and a different filename, not a same-path rescan.
+        fs::rename(overlap.join("tagged.mp3"), overlap.join("tagged copy.mp3")).unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::init_conn(&conn).unwrap();
+        let state = DbState(Mutex::new(conn));
+
+        let first = scan_folder_into_db_full(&state, &primary, None, None).unwrap();
+        assert!(first.inserted >= 3, "first pass indexes the folder");
+        let after_first = count_tracks(&state.0.lock().unwrap());
+
+        let second = scan_folder_into_db_full(&state, &overlap, None, None).unwrap();
+        assert_eq!(second.inserted, 0, "an overlapping folder must add no rows");
+        assert_eq!(
+            second.skipped, first.inserted,
+            "every overlap must be reported as a skipped duplicate"
+        );
+        assert_eq!(count_tracks(&state.0.lock().unwrap()), after_first);
+
+        // Rescanning the original folder is still a pure no-op.
+        let again = scan_folder_into_db_full(&state, &primary, None, None).unwrap();
+        assert_eq!(again.inserted, 0);
+        assert_eq!(count_tracks(&state.0.lock().unwrap()), after_first);
+
+        drop(state);
+        fs::remove_dir_all(&parent).unwrap();
     }
 }

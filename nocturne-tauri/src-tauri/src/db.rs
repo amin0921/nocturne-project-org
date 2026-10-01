@@ -409,6 +409,13 @@ pub fn get_track_play_count(conn: &Connection, track_id: &str) -> Result<u64, St
     Ok(n.max(0) as u64)
 }
 
+/// Delete every row from `listening_history` (History panel "Clear History").
+/// Returns the number of rows removed. Schema and other tables are untouched.
+pub fn clear_listening_history(conn: &Connection) -> Result<usize, String> {
+    conn.execute("DELETE FROM listening_history", [])
+        .map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------
 // Queue checkpoint & saved sessions (Phase 01 · Feature 3)
 //
@@ -566,6 +573,21 @@ pub fn delete_named_session(conn: &Connection, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// Snapshot payload of one named session (excluded from the listing on
+/// purpose — the webview only pulls the heavy JSON for the session it loads).
+pub fn get_named_session_snapshot(conn: &Connection, id: i64) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT snapshot_json FROM saved_sessions WHERE id = ?1",
+        params![id],
+        |r| r.get::<_, String>(0),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other.to_string()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,6 +677,22 @@ mod tests {
         assert!((new.duration_listened_secs - 12.0).abs() < f64::EPSILON);
         assert_eq!(new.played_at, 300);
         assert_eq!(new.status, "skipped");
+    }
+
+    #[test]
+    fn clear_listening_history_empties_table_and_counts_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_conn(&conn).unwrap();
+        insert_listening_history(&conn, "t1", "A", "X", 100.0, 100.0, "completed", Some(1)).unwrap();
+        insert_listening_history(&conn, "t2", "B", "Y", 120.0, 60.0, "partial", Some(2)).unwrap();
+
+        let removed = clear_listening_history(&conn).unwrap();
+        assert_eq!(removed, 2, "must report every deleted row");
+        assert!(get_recent_listening_history(&conn, 10).unwrap().is_empty());
+        // Clearing an already-empty table is a clean 0, not an error.
+        assert_eq!(clear_listening_history(&conn).unwrap(), 0);
+        // Play-count aggregation reads the same table — it must follow suit.
+        assert_eq!(get_track_play_count(&conn, "t1").unwrap(), 0);
     }
 
     #[test]
@@ -785,6 +823,13 @@ mod tests {
         // Deleting an unknown id is a silent no-op.
         delete_named_session(&conn, id_b).unwrap();
         assert_eq!(list_saved_sessions(&conn).unwrap().len(), 2);
+
+        // Snapshot payload is retrievable per id; unknown ids read as None.
+        assert_eq!(
+            get_named_session_snapshot(&conn, id_a).unwrap().as_deref(),
+            Some("{\"q\":\"A\"}")
+        );
+        assert_eq!(get_named_session_snapshot(&conn, 9999).unwrap(), None);
     }
 
     #[test]

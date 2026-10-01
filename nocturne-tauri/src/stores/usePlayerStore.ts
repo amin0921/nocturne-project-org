@@ -47,6 +47,37 @@ export function queueItemId(track: PlayerTrack): string {
 
 export type PlaybackMode = 'normal' | 'shuffle' | 'repeat-all' | 'repeat-one'
 
+/**
+ * Pre-replacement capture of the live queue (taken right before a session's
+ * "Replace Queue" mutates it) so the displacement is one-click reversible.
+ */
+export interface PreviousQueueSnapshot {
+  tracks: PlayerTrack[]
+  activeIndex: number
+  positionMs: number
+}
+
+/**
+ * Pre-mutation capture for DESTRUCTIVE queue actions (remove row / clear
+ * queue), so the UndoToast's one-click restore can reinstate the exact
+ * pre-action state: both tiers, the playhead and the playback position.
+ */
+export interface QueueUndoSnapshot {
+  tracks: PlayerTrack[]
+  priorityQueue: PlayerTrack[]
+  activeIndex: number
+  positionMs: number
+}
+
+function captureQueueUndoSnapshot(): QueueUndoSnapshot {
+  return {
+    tracks: [...snapshot.queue],
+    priorityQueue: [...snapshot.priorityQueue],
+    activeIndex: snapshot.index,
+    positionMs: Math.max(0, Math.round(snapshot.currentTime * 1000))
+  }
+}
+
 function loadFavorites(): Set<number> {
   try {
     const raw = localStorage.getItem('nocturne:favorites')
@@ -85,6 +116,8 @@ interface PlayerSnapshot {
   playbackError: string | null
   favorites: Set<number>
   currentLyrics: LyricLine[]
+  /** Queue displaced by the latest Replace Queue (null = nothing to undo). */
+  previousQueueSnapshot: PreviousQueueSnapshot | null
 }
 
 type Listener = () => void
@@ -102,7 +135,8 @@ let snapshot: PlayerSnapshot = {
   mode: 'normal',
   playbackError: null,
   favorites: loadFavorites(),
-  currentLyrics: []
+  currentLyrics: [],
+  previousQueueSnapshot: null
 }
 
 const listeners = new Set<Listener>()
@@ -573,7 +607,18 @@ export async function restoreCheckpoint(snapshotJson: string): Promise<boolean> 
     duration: track.duration_secs ?? null,
     currentLyrics: [],
     playbackError: null,
-    mode: parsed.isShuffle ? 'shuffle' : repeatMode
+    mode: parsed.isShuffle ? 'shuffle' : repeatMode,
+    // Preserve the displaced live queue so the replacement is one-click
+    // reversible (sessions "Replace Queue" undo). An empty pre-state has
+    // nothing worth restoring, so it resets to null.
+    previousQueueSnapshot:
+      snapshot.queue.length > 0
+        ? {
+            tracks: snapshot.queue.map((t) => ({ ...t, queueId: undefined })),
+            activeIndex: snapshot.index,
+            positionMs: Math.max(0, Math.round(snapshot.currentTime * 1000))
+          }
+        : null
   })
   resetFailures()
   audioController.load(toAudioUrl(track.path))
@@ -596,6 +641,110 @@ export async function discardCheckpoint(): Promise<void> {
   } catch (err) {
     console.debug('[usePlayerStore] clear_queue_checkpoint error:', err)
   }
+}
+
+/**
+ * One-click revert of the latest Replace Queue: reinstates the displaced
+ * queue (fresh queue-slot ids), resumes PAUSED at the captured track and
+ * position, and consumes the snapshot (undo is single-level by design).
+ * No-op when nothing was displaced.
+ */
+export function restorePreviousQueue(): void {
+  ensureWiring()
+  const prev = snapshot.previousQueueSnapshot
+  if (!prev || prev.tracks.length === 0) return
+  const withFreshIds = prev.tracks.map((t) => ({ ...t, queueId: nextQueueId() }))
+  const activeIndex = Math.min(Math.max(0, Math.floor(prev.activeIndex)), withFreshIds.length - 1)
+  const track = withFreshIds[activeIndex]
+  set({
+    queue: withFreshIds,
+    priorityQueue: [],
+    index: activeIndex,
+    currentTrack: track,
+    currentTime: 0,
+    duration: track.duration_secs ?? null,
+    currentLyrics: [],
+    playbackError: null,
+    previousQueueSnapshot: null
+  })
+  resetFailures()
+  audioController.load(toAudioUrl(track.path))
+  const positionSecs = Math.max(0, (prev.positionMs ?? 0) / 1000)
+  if (positionSecs > 0) {
+    audioController.seek(positionSecs)
+    set({ currentTime: positionSecs })
+  }
+  void loadLyricsForTrack(track)
+}
+
+/**
+ * Serialize playback state for saving as a named session. Same payload shape
+ * as the queue checkpoint (Feature 3 contract). Pass `only` to save a SELECTED
+ * SUBSET of the queue (selective session save): the snapshot then contains just
+ * those tracks, with activeIndex pointing at the currently playing track when
+ * it survived the selection (else the first track).
+ */
+export function exportQueueSnapshot(only?: PlayerTrack[]): {
+  snapshotJson: string
+  trackCount: number
+  durationSecs: number
+} {
+  const base = buildCheckpointSnapshot()
+  const tracks = only ? only.map((t) => ({ ...t, queueId: undefined })) : base.tracks
+  const activeIndex = only
+    ? only.findIndex((t) => t.id === snapshot.currentTrack?.id) >= 0
+      ? only.findIndex((t) => t.id === snapshot.currentTrack?.id)
+      : 0
+    : base.activeIndex
+  const snap: CheckpointSnapshot = only ? { ...base, tracks, activeIndex } : base
+  const durationSecs = tracks.reduce(
+    (sum, t) => sum + (t.duration_secs && t.duration_secs > 0 ? t.duration_secs : 0),
+    0
+  )
+  return { snapshotJson: JSON.stringify(snap), trackCount: tracks.length, durationSecs }
+}
+
+/**
+ * Play a track that belongs to a saved session from inside the sessions
+ * popover. When the track already exists in the context queue (matched by
+ * library id, then by path) playback switches to that row; otherwise the
+ * track is appended to the END of the queue first (non-destructive — the
+ * existing queue is never replaced) and the new row starts playing. Returns
+ * the played row's queue-slot id (`queueItemId`) so the caller can scroll the
+ * queue list to it, or null when the track was unusable.
+ */
+export function playTrackFromSession(track: PlayerTrack): string | null {
+  ensureWiring()
+  if (!track || typeof track.path !== 'string' || track.path.length === 0) return null
+  const queue = snapshot.queue
+  let idx = queue.findIndex((t) => t.id === track.id)
+  if (idx < 0) idx = queue.findIndex((t) => t.path === track.path)
+  if (idx < 0) {
+    appendTracksToQueue([track])
+    const appended = snapshot.queue
+    idx = appended.findIndex((t) => t.id === track.id)
+    if (idx < 0) idx = appended.length - 1
+    if (idx < 0) return null
+  }
+  void playTrackAt(idx)
+  return queueItemId(snapshot.queue[idx])
+}
+
+/**
+ * Append whole tracks to the END of the context queue (named-session
+ * "Add to Queue"). Existing rows, playback state and the priority tier are
+ * untouched; the structural `set` schedules the debounced checkpoint. Rows
+ * without a readable path are dropped defensively, and fresh queue-slot ids
+ * are minted so appended duplicates never collide with existing rows.
+ */
+export function appendTracksToQueue(tracks: PlayerTrack[]): void {
+  ensureWiring()
+  const playable = (Array.isArray(tracks) ? tracks : []).filter(
+    (t) => t && typeof t.path === 'string' && t.path.length > 0
+  )
+  if (playable.length === 0) return
+  const withFreshIds = playable.map((t) => ({ ...t, queueId: nextQueueId() }))
+  set({ queue: [...snapshot.queue, ...withFreshIds] })
 }
 
 /**
@@ -953,6 +1102,73 @@ export function clearPriorityQueue(): void {
   set({ priorityQueue: [] })
 }
 
+/**
+ * Remove ONE context-queue row by its queue-slot id (`queueItemId`), capturing
+ * an undo snapshot of both tiers + playhead + position beforehand. Returns the
+ * snapshot for the caller's toast, or null when the id belongs to no row.
+ *
+ * Active-row handling: if the removed row IS the live audio (context playhead,
+ * not a priority-tier takeover), playback advances cleanly to the row that
+ * took its slot — playing on if it was playing, loading paused otherwise. An
+ * emptied context stops outright. The priority tier is never touched.
+ */
+export function removeQueuedRow(queueId: string): QueueUndoSnapshot | null {
+  ensureWiring()
+  const at = snapshot.queue.findIndex((t) => queueItemId(t) === queueId)
+  if (at < 0) return null
+  const undoSnapshot = captureQueueUndoSnapshot()
+  const next = snapshot.queue.filter((_, i) => i !== at)
+
+  const isActiveRow =
+    at === snapshot.index && snapshot.currentTrack?.path === snapshot.queue[at]?.path
+  if (!isActiveRow) {
+    // Playback untouched; the playhead only slides when the removal happened
+    // BEFORE it in the list.
+    set({ queue: next, index: at < snapshot.index ? snapshot.index - 1 : snapshot.index })
+    return undoSnapshot
+  }
+
+  finishActiveSession('skip')
+  if (next.length === 0) {
+    try {
+      audioController.pause()
+      audioController.seek(0)
+    } catch (err) {
+      console.debug('[AudioController pause error]:', err)
+    }
+    set({
+      queue: [],
+      index: -1,
+      currentTrack: null,
+      isPlaying: false,
+      currentTime: 0,
+      duration: null,
+      playbackError: null,
+      currentLyrics: []
+    })
+    return undoSnapshot
+  }
+
+  const nextIndex = Math.min(at, next.length - 1)
+  if (snapshot.isPlaying) {
+    set({ queue: next })
+    void startAt(nextIndex)
+  } else {
+    // Paused: swap the loaded audio to the neighbor WITHOUT playing it.
+    const track = next[nextIndex]
+    set({
+      queue: next,
+      index: nextIndex,
+      currentTrack: track,
+      currentTime: 0,
+      duration: track.duration_secs ?? null,
+      currentLyrics: []
+    })
+    audioController.load(toAudioUrl(track.path))
+  }
+  return undoSnapshot
+}
+
 export function setVolume(volume: number): void {
   ensureWiring()
   const v = Math.min(100, Math.max(0, Math.round(volume)))
@@ -1023,8 +1239,70 @@ export function clearQueue(): void {
     currentTime: 0,
     duration: null,
     playbackError: null,
-    currentLyrics: []
+    currentLyrics: [],
+    // An intentionally emptied queue has nothing to revert to.
+    previousQueueSnapshot: null
   })
+}
+
+/**
+ * Undoable clear: captures both tiers + playhead + position, then performs the
+ * normal destructive `clearQueue()`. Returns the snapshot for the caller's
+ * UndoToast, or null when there was nothing to clear (no toast then).
+ */
+export function clearQueueWithUndo(): QueueUndoSnapshot | null {
+  ensureWiring()
+  if (snapshot.queue.length === 0 && snapshot.priorityQueue.length === 0) return null
+  const undoSnapshot = captureQueueUndoSnapshot()
+  clearQueue()
+  return undoSnapshot
+}
+
+/**
+ * One-click restore of a destructive-action snapshot (remove row / clear
+ * queue): reinstates both tiers and the playhead. When the snapshot's active
+ * track is STILL the live audio (undoing a non-active row removal mid-playback)
+ * the audio element is untouched — no reload, no seek, no glitch. Otherwise the
+ * captured track is loaded PAUSED at the captured position (the same
+ * safety-first convention as restoreCheckpoint / restorePreviousQueue).
+ */
+export function restoreQueueSnapshot(s: QueueUndoSnapshot): void {
+  ensureWiring()
+  const tracks = s.tracks.map((t) => ({ ...t }))
+  const priority = s.priorityQueue.map((t) => ({ ...t }))
+  if (tracks.length === 0) {
+    // Context list was empty pre-action: only the priority tier comes back.
+    set({ queue: [], priorityQueue: priority, index: -1 })
+    return
+  }
+  const activeIndex = Math.min(Math.max(0, Math.floor(s.activeIndex)), tracks.length - 1)
+  const activeTrack = tracks[activeIndex] ?? null
+  const sameAudio =
+    !!activeTrack && !!snapshot.currentTrack && activeTrack.path === snapshot.currentTrack.path
+  if (sameAudio) {
+    set({ queue: tracks, priorityQueue: priority, index: activeIndex })
+    return
+  }
+  const positionSecs = Math.max(0, (s.positionMs ?? 0) / 1000)
+  set({
+    queue: tracks,
+    priorityQueue: priority,
+    index: activeIndex,
+    currentTrack: activeTrack,
+    currentTime: positionSecs,
+    duration: activeTrack?.duration_secs ?? null,
+    currentLyrics: [],
+    isPlaying: false,
+    playbackError: null
+  })
+  resetFailures()
+  if (activeTrack) {
+    audioController.load(toAudioUrl(activeTrack.path))
+    if (positionSecs > 0) {
+      audioController.seek(positionSecs)
+      set({ currentTime: positionSecs })
+    }
+  }
 }
 
 export function initPlayer(volume01 = 0.8): void {
@@ -1040,8 +1318,14 @@ usePlayerStore.getState = () => ({
   addToQueue,
   removeFromPriorityQueue,
   clearPriorityQueue,
+  removeQueuedRow,
+  clearQueueWithUndo,
+  restoreQueueSnapshot,
   reorderQueue,
   setQueueOrder,
+  appendTracksToQueue,
+  playTrackFromSession,
+  restorePreviousQueue,
   playTracks,
   playTrackAt,
   togglePlay,

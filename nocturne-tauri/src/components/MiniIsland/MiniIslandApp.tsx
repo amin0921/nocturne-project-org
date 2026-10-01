@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { listen } from '@tauri-apps/api/event'
+import { emit, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { MiniIslandCard } from './MiniIslandCard'
 import { settleMagneticSnap } from './magneticSnap'
@@ -54,6 +54,15 @@ export default function MiniIslandApp(): JSX.Element {
       saveGuardUntilRef.current = performance.now() + 600
       setEnterKey((k) => k + 1)
     })
+    // P0 on-demand lifecycle: this window no longer exists at startup — it is
+    // created the moment the main window is minimized. App.tsx holds its reveal
+    // emit until the listener above is armed, otherwise the first appearance
+    // would pop in with no droplet entrance at all. Announce readiness only
+    // AFTER the subscribe round-trip resolves, so the two IPC calls stay
+    // ordered and the reveal can never arrive first.
+    void unlistenPromise
+      .then(() => emit('mini-island:ready'))
+      .catch(() => undefined)
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {})
     }

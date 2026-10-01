@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { History as HistoryIcon } from 'lucide-react'
+import { History as HistoryIcon, Trash2 } from 'lucide-react'
 import {
   playNext,
   playTrackAt,
@@ -8,6 +8,7 @@ import {
   type PlayerTrack
 } from '../../stores/usePlayerStore'
 import { resolveCoverUrl } from '../../utils/cover-url'
+import { EmptyState } from '../empty/EmptyState'
 import { HistoryRow, type HistoryRowData, type HistoryStatus } from './HistoryRow'
 
 /** Row shape returned by the Rust `get_listening_history` command (camelCase). */
@@ -151,6 +152,18 @@ export function HistoryPanel({ resolveTrack, onEntriesChange }: HistoryPanelProp
     return () => window.clearInterval(timer)
   }, [entries])
 
+  /** Wipe every history row via IPC and drop straight into the EmptyState. */
+  const clearHistory = useCallback(async (): Promise<void> => {
+    try {
+      await invoke<number>('clear_listening_history')
+      setEntries([])
+      setPlayCounts({})
+      reportCount.current?.(0)
+    } catch (err) {
+      console.debug('[HistoryPanel] clear_listening_history failed:', err)
+    }
+  }, [])
+
   const playEntry = useCallback(
     (entry: HistoryRowData): void => {
       const { queue } = usePlayerStore.getState()
@@ -184,31 +197,42 @@ export function HistoryPanel({ resolveTrack, onEntriesChange }: HistoryPanelProp
 
   if (entries !== null && entries.length === 0) {
     return (
-      <div className="nq-empty">
-        <span className="nq-empty-badge">
-          <HistoryIcon size={20} aria-hidden />
-        </span>
-        <p className="font-medium">No listening history yet</p>
-        <p className="text-[11px] opacity-70">Tracks you play show up here.</p>
-      </div>
+      <EmptyState
+        icon={<HistoryIcon size={20} aria-hidden />}
+        title="No listening history yet"
+        description="Songs you play will appear here with completion and timestamp details"
+      />
     )
   }
 
   return (
-    <ul className="history-list flex flex-col gap-1.5" aria-label="Recently played">
-      {/* Keyed by canonical path (not session id): a replay MOVES the existing
-          row to the top instead of remounting it — no re-animation, no clones. */}
-      {(entries ?? []).map((entry, index) => (
-        <HistoryRow
-          key={entry.trackId}
-          entry={entry}
-          index={index}
-          relative={relativeTime(entry.playedAt, now)}
-          playCount={playCounts[entry.trackId]}
-          onClick={() => playEntry(entry)}
-        />
-      ))}
-    </ul>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center justify-end px-1 pb-1.5">
+        <button
+          type="button"
+          onClick={() => void clearHistory()}
+          className="flex h-6 items-center gap-1.5 rounded-lg px-2 text-[11px] font-medium text-faint transition-colors hover:bg-white/10 hover:text-ink focus-visible:outline-none"
+          aria-label="Clear listening history"
+        >
+          <Trash2 size={12} aria-hidden />
+          <span>Clear History</span>
+        </button>
+      </div>
+      <ul className="history-list flex min-h-0 flex-1 flex-col gap-1.5" aria-label="Recently played">
+        {/* Keyed by canonical path (not session id): a replay MOVES the existing
+            row to the top instead of remounting it — no re-animation, no clones. */}
+        {(entries ?? []).map((entry, index) => (
+          <HistoryRow
+            key={entry.trackId}
+            entry={entry}
+            index={index}
+            relative={relativeTime(entry.playedAt, now)}
+            playCount={playCounts[entry.trackId]}
+            onClick={() => playEntry(entry)}
+          />
+        ))}
+      </ul>
+    </div>
   )
 }
 

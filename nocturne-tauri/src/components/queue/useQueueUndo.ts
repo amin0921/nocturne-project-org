@@ -3,33 +3,35 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 /**
  * Snapshot-based queue undo safety net.
  *
- * Before any reorder the current id order is captured into a single snapshot
- * (not an operation stack), so Undo is one deterministic restore instead of a
- * chain of inverse mutations. The snapshot lives for UNDO_WINDOW_MS; the global
- * Ctrl/Cmd+Z chord and the toast's Undo button both resolve through the same
- * `undo()` path. A second reorder inside the window simply replaces the snapshot.
+ * Before any destructive queue action (reorder / remove row / clear queue) the
+ * caller captures ONE snapshot — a label plus a deterministic `restore`
+ * closure — so Undo is a single restore instead of a chain of inverse
+ * mutations. The snapshot lives for UNDO_WINDOW_MS; the global Ctrl/Cmd+Z
+ * chord and the toast's Undo button both resolve through the same `undo()`
+ * path. A second action inside the window simply replaces the snapshot.
  */
 
 export interface QueueSnapshot {
-  /** Track ids in the order they were in BEFORE the change. */
-  order: string[]
-  /** Human label for the toast, e.g. "Queue order". */
+  /** Human label for the toast, e.g. "Reordered". */
   label: string
   /** Epoch ms when the snapshot was taken. */
   at: number
+  /** One deterministic restore of the pre-action state. */
+  restore: () => void
 }
 
-export const UNDO_WINDOW_MS = 5000
+/** How long the UndoToast stays actionable (its drain bar mirrors this). */
+export const UNDO_WINDOW_MS = 10000
 
 export interface QueueUndoApi {
   snapshot: QueueSnapshot | null
-  beginReorder: (currentOrder: string[], label?: string) => void
+  begin: (snapshot: { label: string; restore: () => void }) => void
   undo: () => void
   dismiss: () => void
   windowMs: number
 }
 
-export function useQueueUndo(onRestore: (order: string[]) => void): QueueUndoApi {
+export function useQueueUndo(): QueueUndoApi {
   const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null)
   const timer = useRef<number | null>(null)
 
@@ -45,12 +47,13 @@ export function useQueueUndo(onRestore: (order: string[]) => void): QueueUndoApi
     setSnapshot(null)
   }, [clearTimer])
 
-  /** Capture the pre-change order. Call this BEFORE mutating the store. */
-  const beginReorder = useCallback(
-    (currentOrder: string[], label = 'Queue order') => {
+  /** Capture the pre-action state. Call this BEFORE (or atomically with) mutating the store. */
+  const begin = useCallback(
+    ({ label, restore }: { label: string; restore: () => void }) => {
       clearTimer()
-      setSnapshot({ order: [...currentOrder], label, at: Date.now() })
-      // Fail-safe fallback timer (7000ms) so UndoToast's 5s countdown + 320ms outro finish cleanly
+      setSnapshot({ label, restore, at: Date.now() })
+      // Fail-safe fallback timer so the toast's drain + 180ms outro always
+      // finish cleanly even if the drain bar's animationend is missed.
       timer.current = window.setTimeout(() => {
         timer.current = null
         setSnapshot(null)
@@ -61,9 +64,9 @@ export function useQueueUndo(onRestore: (order: string[]) => void): QueueUndoApi
 
   const undo = useCallback(() => {
     if (!snapshot) return
-    onRestore(snapshot.order)
+    snapshot.restore()
     dismiss()
-  }, [snapshot, onRestore, dismiss])
+  }, [snapshot, dismiss])
 
   // Global Ctrl+Z / Cmd+Z (no Shift) restores the snapshot instantly.
   useEffect(() => {
@@ -88,7 +91,7 @@ export function useQueueUndo(onRestore: (order: string[]) => void): QueueUndoApi
 
   useEffect(() => clearTimer, [clearTimer])
 
-  return { snapshot, beginReorder, undo, dismiss, windowMs: UNDO_WINDOW_MS }
+  return { snapshot, begin, undo, dismiss, windowMs: UNDO_WINDOW_MS }
 }
 
 export default useQueueUndo

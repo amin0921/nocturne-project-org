@@ -47,7 +47,13 @@ export function PlayPauseButton({
       className={cn(
         'play-pause-btn grid place-items-center rounded-full bg-[#f59e0b] text-black',
         !hasCustomSize && 'size-12',
-        'shadow-[0_0_24px_rgba(245,158,11,0.45)] transition-transform hover:scale-105 active:scale-95',
+        // Resting aura must match the `0%` keyframe of `play-aura-pulse`
+        // (5px extent) so there is no visual jump when the pulse starts or
+        // stops. The previous `0 0 24px` was WIDER than the pulse peak and was
+        // the actual bleed source whenever the track was paused — or under
+        // prefers-reduced-motion, where the animation is disabled entirely and
+        // this shadow is all that remains.
+        'shadow-[0_0_5px_rgba(234,179,8,0.3)] transition-transform hover:scale-105 active:scale-95',
         'focus:outline-none focus-visible:ring-2 focus-visible:ring-white',
         'disabled:opacity-40 disabled:pointer-events-none disabled:hover:scale-100',
         'motion-reduce:transition-none',

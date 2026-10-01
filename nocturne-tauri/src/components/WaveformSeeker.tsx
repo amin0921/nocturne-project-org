@@ -82,6 +82,29 @@ export function WaveformSeeker({
   const slot = VIEW_W / bars.length
   const barW = Math.max(2, slot * 0.55)
 
+  // P0 idle-CPU fix: the idle placeholder runs BAR_COUNT (72) infinite CSS
+  // animations. They keep ticking whenever the window merely exists, so the
+  // shimmer is frozen while the document is hidden or the window is unfocused
+  // (covered/idle/on another app) and resumes from the exact same frame on
+  // return — `animation-play-state` pauses the timeline, it does not restart
+  // it, so the visible state is pixel-identical to before. State changes only
+  // on visibility/focus transitions, never per frame.
+  const [shimmerSuspended, setShimmerSuspended] = useState(false)
+  useEffect(() => {
+    const sync = (): void => {
+      setShimmerSuspended(document.visibilityState === 'hidden' || !document.hasFocus())
+    }
+    sync()
+    document.addEventListener('visibilitychange', sync)
+    window.addEventListener('blur', sync)
+    window.addEventListener('focus', sync)
+    return () => {
+      document.removeEventListener('visibilitychange', sync)
+      window.removeEventListener('blur', sync)
+      window.removeEventListener('focus', sync)
+    }
+  }, [])
+
   const ratioFromEvent = useCallback((clientX: number): number => {
     if (!svgRef.current) return 0
     const rect = svgRef.current.getBoundingClientRect()
@@ -249,7 +272,10 @@ export function WaveformSeeker({
           ref={svgRef}
           viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
           preserveAspectRatio="none"
-          className="block h-8 md:h-10 w-full overflow-visible"
+          className={cn(
+            'block h-8 md:h-10 w-full overflow-visible',
+            idle && shimmerSuspended && 'waveform-idle-suspended'
+          )}
           onMouseMove={(e) => setHoverRatio(ratioFromEvent(e.clientX))}
           onMouseLeave={() => setHoverRatio(null)}
           onPointerDown={handlePointerDown}

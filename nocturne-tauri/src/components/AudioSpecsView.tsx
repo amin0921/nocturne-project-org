@@ -4,6 +4,7 @@ import { usePlayerStore } from '../stores/usePlayerStore'
 import { resolveCoverUrl } from '../utils/cover-url'
 import { formatTime } from '../types/player'
 import { cn } from '../lib/utils'
+import { EmptyState } from './empty/EmptyState'
 
 export interface AudioSpecsViewProps {
   className?: string
@@ -125,15 +126,12 @@ export function AudioSpecsView({ className }: AudioSpecsViewProps): JSX.Element 
 
   if (!currentTrack) {
     return (
-      <div className={cn('flex min-h-0 flex-1 flex-col items-center justify-center p-6 text-center select-none', className)}>
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-faint mb-3 shadow-inner">
-          <AudioWaveform size={22} className="text-ember/70" />
-        </div>
-        <p className="text-xs font-semibold text-ink">No Audio Loaded</p>
-        <p className="text-[11px] text-faint mt-1 max-w-[220px] leading-relaxed">
-          Select or play a track to inspect technical studio audio specifications.
-        </p>
-      </div>
+      <EmptyState
+        className={className}
+        icon={<AudioWaveform size={22} aria-hidden />}
+        title="No audio loaded"
+        description="Play a song to inspect its sample rate, bitrate, and codec specs"
+      />
     )
   }
 

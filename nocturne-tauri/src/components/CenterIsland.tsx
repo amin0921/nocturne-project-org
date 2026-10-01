@@ -122,9 +122,25 @@ export function CenterIsland({
         </div>
       </div>
 
-      {/* Main Content Area */}
-      {view === 'stage' ? (
-        currentTrack ? (
+      {/*
+        Main Content Area — PERSISTENT PANES.
+
+        All three views stay mounted and are toggled with `display: none` only.
+        The previous conditional ternary destroyed the inactive subtree, so
+        switching INTO library synchronously remounted the whole 127-row table
+        (with its cover <img> nodes) in one frame and hung for ~150ms, while
+        switching back to stage felt instant only because the stage subtree
+        happened to be small. A CSS repaint is now the entire cost, and the
+        library table keeps its own scrollTop across switches.
+      */}
+      <div
+        className={cn(
+          'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+          view === 'stage' ? 'flex' : 'hidden'
+        )}
+        aria-hidden={view !== 'stage'}
+      >
+        {currentTrack ? (
           <div
             /* NOTE: deliberately NOT keyed by track id — remounting this subtree
                in the same paint frame as a track skip tears down the lyrics
@@ -295,16 +311,30 @@ export function CenterIsland({
               </button>
             )}
           </div>
-        )
-      ) : view === 'stats' ? (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <StatsDashboard />
-        </div>
-      ) : (
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          {libraryContent}
-        </div>
-      )}
+        )}
+      </div>
+
+      {/* Library table — persistent pane (keeps its scroll position) */}
+      <div
+        className={cn(
+          'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+          view === 'library' ? 'flex' : 'hidden'
+        )}
+        aria-hidden={view !== 'library'}
+      >
+        {libraryContent}
+      </div>
+
+      {/* Listening stats — persistent pane */}
+      <div
+        className={cn(
+          'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+          view === 'stats' ? 'flex' : 'hidden'
+        )}
+        aria-hidden={view !== 'stats'}
+      >
+        <StatsDashboard />
+      </div>
     </div>
   )
 }

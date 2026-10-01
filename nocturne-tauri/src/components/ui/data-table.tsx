@@ -103,7 +103,7 @@ export function DataTable<T>({
                 aria-selected={active}
                 title={disabled ? disabledTitle : undefined}
                 className={cn(
-                  'group h-14 border-b border-white/[0.05] hover:bg-white/[0.04] transition-colors',
+                  'data-table-row group h-14 border-b border-white/[0.05] hover:bg-white/[0.04] transition-colors',
                   disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer',
                   active && 'bg-white/[0.06]'
                 )}
