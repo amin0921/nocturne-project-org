@@ -151,7 +151,14 @@
   gap: 10px;
   max-width: 100%;
   overflow: hidden;
-  will-change: transform, opacity, filter;
+  /* Layer hints: transform + opacity ONLY. A `filter` hint here promotes a
+     second compositor layer that gets torn down when the outro class swaps
+     the animation — a one-frame composite flash on transparent Windows DWM
+     layers. backdrop-filter stays static; the exit animates transform/opacity
+     exclusively. `contain` keeps the animated subtree from invalidating the
+     panel behind it mid-exit. */
+  contain: layout paint;
+  will-change: transform, opacity;
   animation: nq-toast-in 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 

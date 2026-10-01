@@ -12,7 +12,9 @@ import { modKey } from '../../lib/platform'
  * and its `animationend` triggers dismissal — zero rAF, zero React re-renders
  * for the countdown. Intro/outro are the §2 keyframes (240ms in with blur,
  * 180ms ease-out down-fade). Ctrl/Cmd+Z is handled globally by useQueueUndo;
- * this component only shows the hint badge.
+ * this component only shows the hint badge. Teardown waits for the real
+ * `animationend` of nq-toast-out (OUTRO_MS timer as fallback only), so the
+ * toast unmounts exactly when the exit animation lands — never mid-frame.
  */
 
 const OUTRO_MS = 180
@@ -47,10 +49,17 @@ export const UndoToast = React.memo(function UndoToast({
     if (dismissed.current) return
     dismissed.current = true
     if (action === 'undo') {
+      // Rollback fires synchronously and FIRST — data is restored in the same
+      // event tick as the click; only the toast's exit is deferred.
       handlers.current.onUndo()
     }
     setInternalLeaving(true)
+    if (outroTimer.current !== null) window.clearTimeout(outroTimer.current)
+    // Fallback teardown only: the primary unmount signal is the real
+    // `animationend` of nq-toast-out (onOutroAnimationEnd), so the DOM node is
+    // never destroyed before (or long after) the exit animation completes.
     outroTimer.current = window.setTimeout(() => {
+      outroTimer.current = null
       handlers.current.onDismiss()
     }, OUTRO_MS)
   }, [])
@@ -61,6 +70,22 @@ export const UndoToast = React.memo(function UndoToast({
     },
     []
   )
+
+  /**
+   * Exit teardown: the nq-toast-out keyframes fire this exactly once, at the
+   * true end of the 180ms down-fade. The drain bar's animationend also bubbles
+   * here, so both the event target and the animation name are checked before
+   * dismissing. (Reduced-motion / missed-event safety: the OUTRO_MS timer.)
+   */
+  const onOutroAnimationEnd = useCallback((e: React.AnimationEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return
+    if (e.animationName !== 'nq-toast-out') return
+    if (outroTimer.current !== null) {
+      window.clearTimeout(outroTimer.current)
+      outroTimer.current = null
+    }
+    handlers.current.onDismiss()
+  }, [])
 
   // Escape dismisses; Ctrl/Cmd+Z undo lives in useQueueUndo's global chord.
   useEffect(() => {
@@ -92,6 +117,7 @@ export const UndoToast = React.memo(function UndoToast({
         data-leaving={isLeaving}
         role="status"
         aria-live="polite"
+        onAnimationEnd={onOutroAnimationEnd}
       >
         <Undo2 size={14} strokeWidth={2.2} className="shrink-0 text-[#EAB308]" aria-hidden />
         <span className="nq-toast-msg shrink-0" dir="auto">

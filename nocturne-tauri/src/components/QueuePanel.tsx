@@ -262,12 +262,21 @@ export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrac
     playFlip(flipContainerRef.current, first)
   }, [queue])
 
-  // Keep the toast mounted through its 320ms exit whenever the snapshot clears
+  // Keep the toast mounted through its 180ms exit whenever the snapshot clears
   // (timeout, Undo, Escape) so it always dissolves instead of popping out.
+  //
+  // This MUST be a layout effect: the toast render guard is
+  // `snapshot ?? ghostSnapshot`, so the commit that clears the snapshot would
+  // otherwise paint one frame with NO toast before the ghost effect ran
+  // (useEffect runs after paint) — the exact vanish-then-reappear flash on
+  // Undo. A layout effect re-adds the ghost before the browser paints, so the
+  // toast node stays in the DOM continuously and only the `nq-toast-out`
+  // class flips.
+  //
   // The exit timer lives on a ref (not an effect cleanup): React re-runs this
   // effect when ghostSnapshot flips, and a cleanup would cancel the very timer
   // that unmounts the ghost, leaving an invisible toast over the list.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const prev = prevSnapshotRef.current
     prevSnapshotRef.current = snapshot
     if (snapshot) {
