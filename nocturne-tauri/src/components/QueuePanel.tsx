@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Disc3, Dot, GripVertical, History as HistoryIcon, ListMusic, ListOrdered, Trash2, X, Zap } from 'lucide-react'
+import { Disc3, Dot, GripVertical, ListMusic, ListOrdered, X, Zap } from 'lucide-react'
 import {
-  next,
-  playNext,
   playTrackAt,
   queueItemId,
   removeFromPriorityQueue,
@@ -19,7 +17,8 @@ import { AudioSpecsView } from './AudioSpecsView'
 import { QueueTabs } from './queue/QueueTabs'
 import { UndoToast } from './queue/UndoToast'
 import { useQueueUndo, type QueueSnapshot } from './queue/useQueueUndo'
-import { usePlaybackHistory, type HistoryEntry } from './queue/usePlaybackHistory'
+import { HistoryPanel } from './history/HistoryPanel'
+import { SessionManagerDropdown } from './sessions/SessionManagerDropdown'
 import { captureFlipRects, playFlip, type FlipRects } from './queue/flipList'
 import './queue/queue-styles.css'
 
@@ -39,17 +38,6 @@ function usePreloadCovers(tracks: PlayerTrack[]): void {
   }, [tracks])
 }
 
-/** "just now" / "2m ago" / "1h ago" / "3d ago" — Latin digits, LTR. */
-function relativeTime(playedAt: number, now: number): string {
-  const seconds = Math.floor(Math.max(0, now - playedAt) / 1000)
-  if (seconds < 60) return 'just now'
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
-}
-
 function EmptyState({ icon, text, hint }: { icon: React.ReactNode; text: string; hint?: string }): JSX.Element {
   return (
     <div className="nq-empty">
@@ -65,6 +53,8 @@ export interface QueuePanelProps {
   className?: string
   /** Right-click hook for the shared floating glass track context menu. */
   onTrackContextMenu?: (track: PlayerTrack, e: React.MouseEvent) => void
+  /** Resolve a history row's canonical path to its full library track. */
+  resolveTrack?: (path: string) => PlayerTrack | undefined
 }
 
 interface DragState {
@@ -87,7 +77,7 @@ interface DragState {
  * Every reorder captures a snapshot first, so Ctrl/Cmd+Z or the Undo toast
  * restores the previous order instantly while playback keeps running.
  */
-export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePanelProps): JSX.Element {
+export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrack }: QueuePanelProps): JSX.Element {
   const queue = usePlayerStore((s) => s.queue)
   const priorityQueue = usePlayerStore((s) => s.priorityQueue)
   const currentIndex = usePlayerStore((s) => s.index)
@@ -97,7 +87,8 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
   const activeTab = useUIStore((s) => s.rightTab)
   const setActiveTab = useUIStore((s) => s.setRightTab)
 
-  const { history, clearHistory, getTrack } = usePlaybackHistory((s) => s)
+  /** SQLite-backed history row count, reported by HistoryPanel after each fetch. */
+  const [historyCount, setHistoryCount] = useState(0)
 
   const flipContainerRef = useRef<HTMLUListElement | null>(null)
   const firstRectsRef = useRef<FlipRects | null>(null)
@@ -108,7 +99,6 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
   const dragStateRef = useRef<DragState | null>(null)
   const [settling, setSettling] = useState<{ id: string; fromY: number; active: boolean } | null>(null)
   const [ghostSnapshot, setGhostSnapshot] = useState<QueueSnapshot | null>(null)
-  const [now, setNow] = useState(() => Date.now())
 
   // ----- Edge proximity auto-scroll (pointer-capture drags never trigger native scroll) -----
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -280,14 +270,6 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
 
   useEffect(() => clearGhostTimer, [clearGhostTimer])
 
-  // Relative timestamps tick while the History tab is visible.
-  useEffect(() => {
-    if (activeTab !== 'history') return
-    setNow(Date.now())
-    const timer = window.setInterval(() => setNow(Date.now()), 30_000)
-    return () => window.clearInterval(timer)
-  }, [activeTab])
-
   // Follow the playhead: whenever `index` changes, glide the active row into
   // view inside the (very tall) full-playlist scroller.
   useEffect(() => {
@@ -346,54 +328,32 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
     [moveTrack]
   )
 
-  const historyItems = useMemo(() => {
-    const items: { entry: HistoryEntry; track: PlayerTrack }[] = []
-    history.forEach((entry) => {
-      const track = queue.find((t) => String(t.id) === entry.id) ?? getTrack(entry.id)
-      if (track) items.push({ entry, track })
-    })
-    return items
-  }, [history, queue, getTrack])
-
-  /**
-   * Replay from History: jump to the track when it is still in the context
-   * playlist, otherwise push it to the top of the priority tier and step into
-   * it. The context queue is NEVER spliced, so the album stays intact.
-   */
-  const playHistoryTrack = useCallback(
-    (id: string): void => {
-      const queuedAt = queue.findIndex((t) => String(t.id) === id)
-      if (queuedAt >= 0) {
-        void playTrackAt(queuedAt)
-        return
-      }
-      const track = getTrack(id)
-      if (!track) return
-      playNext(track)
-      void next()
-    },
-    [queue, getTrack]
-  )
-
   const toastSnapshot = snapshot ?? ghostSnapshot
 
   return (
     <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden select-none', className)}>
-      {/* Sliding studio tab header (measured amber pill) + window controls clearance */}
-      <div
-        className={cn(
-          'flex h-14 shrink-0 items-center justify-between gap-2 border-b border-white/10 pl-3',
-          onClose ? 'pr-3' : 'pr-[116px]'
-        )}
-      >
+      {/* Tab strip header — tabs ONLY. The floating window-controls pill
+          (App.tsx: ~106px wide at top-3 right-4, z-[60]) overlays this island's
+          top-right corner, so pr-[116px] keeps the nowrap tab strip clear of it.
+          No utility buttons live on this row: measured tabs are ~183px wide, and
+          with a trigger button added the flex overflow pushed that group under
+          the pill on 280px islands. */}
+      <div className="flex h-14 shrink-0 items-center border-b border-white/10 pl-3 pr-[116px]">
         <QueueTabs
           active={activeTab}
           onChange={setActiveTab}
           queueCount={queue.length}
-          historyCount={history.length}
-          className="min-w-0 flex-1"
+          historyCount={historyCount}
+          className="shrink-0"
         />
+      </div>
 
+      {/* Utility strip — saved-sessions trigger (+ sheet close control) on its
+          own row BELOW the window-controls pill's vertical band (the pill spans
+          roughly y=12..50 in the shell; this row starts at y≈72), so overlap is
+          impossible by construction regardless of island width. */}
+      <div className="flex h-9 shrink-0 items-center justify-end gap-1 border-b border-white/5 px-2">
+        <SessionManagerDropdown />
         {onClose && (
           <button
             type="button"
@@ -406,18 +366,30 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
         )}
       </div>
 
-      {/* Main Tab View Container (Strict Anti-Jitter Layout Lock) */}
+      {/*
+        Main Tab View Container.
+
+        PERSISTENT PANES: all three views stay mounted and hydrated forever and
+        are toggled with `display: none` alone. React used to destroy the
+        inactive tree, so every switch back to `queue` synchronously remounted
+        127+ heavy rows (covers, SVG, drag handlers, context-menu listeners) in
+        one frame and froze the main thread. A pure CSS repaint is now the whole
+        cost, and each pane keeps its own scrollTop for free.
+      */}
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* Tab 1 — Queue: pointer events reorder + FLIP glide + click-to-play */}
-        {activeTab === 'queue' && (
-          <div
-            ref={scrollContainerRef}
-            role="tabpanel"
-            id="panel-queue"
-            aria-labelledby="tab-queue"
-            data-dragging={dragState !== null}
-            className="nocturne-scroll nq-list min-h-0 flex-1 overflow-y-auto p-2"
-          >
+        <div
+          ref={scrollContainerRef}
+          role="tabpanel"
+          id="panel-queue"
+          aria-labelledby="tab-queue"
+          aria-hidden={activeTab !== 'queue'}
+          data-dragging={dragState !== null}
+          className={cn(
+            'nocturne-scroll nq-list nq-pane-fade min-h-0 flex-1 overflow-y-auto p-2',
+            activeTab === 'queue' ? 'block' : 'hidden'
+          )}
+        >
             {queue.length === 0 && priorityQueue.length === 0 ? (
               <EmptyState
                 icon={<ListMusic size={20} aria-hidden />}
@@ -719,81 +691,35 @@ export function QueuePanel({ onClose, className, onTrackContextMenu }: QueuePane
                 )}
               </>
             )}
-          </div>
-        )}
+        </div>
 
-        {/* Tab 2 — History: last 50 played tracks, click to replay */}
-        {activeTab === 'history' && (
-          <div
-            role="tabpanel"
-            id="panel-history"
-            aria-labelledby="tab-history"
-            className="nocturne-scroll nq-list min-h-0 flex-1 overflow-y-auto p-2"
-          >
-            {historyItems.length > 0 && (
-              <div className="nq-header-actions">
-                <button type="button" className="nq-clear" onClick={clearHistory}>
-                  <Trash2 size={13} aria-hidden />
-                  <span>Clear History</span>
-                </button>
-              </div>
-            )}
+        {/* Tab 2 — History: SQLite-backed listening history (persistent pane) */}
+        <div
+          role="tabpanel"
+          id="panel-history"
+          aria-labelledby="tab-history"
+          aria-hidden={activeTab !== 'history'}
+          className={cn(
+            'nocturne-scroll nq-list nq-pane-fade min-h-0 flex-1 overflow-y-auto p-2',
+            activeTab === 'history' ? 'block' : 'hidden'
+          )}
+        >
+          <HistoryPanel resolveTrack={resolveTrack} onEntriesChange={setHistoryCount} />
+        </div>
 
-            {historyItems.length === 0 ? (
-              <EmptyState
-                icon={<HistoryIcon size={20} aria-hidden />}
-                text="Nothing played yet"
-                hint="Tracks you play show up here."
-              />
-            ) : (
-              <ul className="nq-ul" aria-label="Recently played">
-                {historyItems.map(({ entry, track }) => {
-                  const t = track
-                  const coverSrc = resolveCoverUrl(t.coverUrl) ?? t.coverUrl
-                  return (
-                    <li key={`${entry.id}-${entry.playedAt}`}>
-                      <button type="button" className="nq-row" onClick={() => playHistoryTrack(entry.id)}>
-                        <span className="idx">
-                          <HistoryIcon size={13} aria-hidden />
-                        </span>
-                        <div className="size-9 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-white/5">
-                          {coverSrc ? (
-                            <img src={coverSrc} alt="" className="size-full object-cover" draggable={false} />
-                          ) : (
-                            <div className="grid size-full place-items-center text-white/30">
-                              <Disc3 size={16} />
-                            </div>
-                          )}
-                        </div>
-                        <span className="meta">
-                          <span className="title" dir="auto">
-                            {t.title}
-                          </span>
-                          <span className="sub" dir="auto">
-                            {t.artist}
-                          </span>
-                        </span>
-                        <span className="time numeric">{relativeTime(entry.playedAt, now)}</span>
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </div>
-        )}
-
-        {/* Tab 3 — Specs: technical audio inspector (unchanged) */}
-        {activeTab === 'specs' && (
-          <div
-            role="tabpanel"
-            id="panel-specs"
-            aria-labelledby="tab-specs"
-            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-          >
-            <AudioSpecsView />
-          </div>
-        )}
+        {/* Tab 3 — Specs: technical audio inspector (persistent) */}
+        <div
+          role="tabpanel"
+          id="panel-specs"
+          aria-labelledby="tab-specs"
+          aria-hidden={activeTab !== 'specs'}
+          className={cn(
+            'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+            activeTab === 'specs' ? 'flex' : 'hidden'
+          )}
+        >
+          <AudioSpecsView />
+        </div>
 
         {/* Undo safety net — floats above the list while a snapshot is live */}
         {toastSnapshot && (
