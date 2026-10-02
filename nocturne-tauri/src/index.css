@@ -409,6 +409,16 @@ body::-webkit-scrollbar,
   animation: aura-pulse 3s ease-in-out infinite;
 }
 
+/* Playback-gate step (2026-10-02): the placeholder bars dance ONLY while
+   `isPlaying` — WaveformSeeker binds inline `animation-play-state: paused`
+   when paused, so zero animations run at idle. Keyframes animate transform +
+   opacity only (no layout properties), and `transform-box: fill-box` anchors
+   each SVG bar's scale to its own box (without it, scaleY resolves against
+   the SVG viewport origin and the bars collapse upward).
+   GPU-offload attempt (2026-10-02) reverted on measurement: div-based bars
+   with compositor layers did NOT reduce renderer-process CPU (the compositor
+   and raster threads live in that same process) and roughly doubled GPU cost
+   on the transparent window — see the step report for the numbers. */
 .waveform-idle-bar {
   transform-box: fill-box;
   transform-origin: center;
@@ -1178,24 +1188,31 @@ body::-webkit-scrollbar,
   will-change: transform, opacity;
 }
 
-/* Breathing amber ring on the pill (::after ring + ::before halo, 2.4s).
-   Idle-audit fix (2026-10-02): the old box-shadow ring+glow forced per-frame
-   paint work on the transparent window while the timer was merely armed
-   (measured ~10% GPU median). Both layers are painted ONCE — a 1px border
-   ring and a radial-gradient halo, zero box-shadow anywhere — and the loop
-   only animates transform/opacity on composited layers. */
+/* Breathing amber ring on the pill (ring + halo spans, 2.4s).
+   GPU-offload step (2026-10-02): the breathe is now FINITE — 4 iterations,
+   then it rests at the resting keyframe (scale 1 / opacity 0.55, held by
+   fill-mode `both`) instead of looping forever and keeping the compositor
+   awake on the transparent window. CountdownPill re-mounts the two spans
+   (React key) to re-trigger on mount / minute change / window refocus, so
+   no timers or rAF are involved. Both layers are painted ONCE — a 1px
+   border ring and a radial-gradient halo, zero box-shadow anywhere — and
+   the loop only animates transform/opacity on composited layers. */
 .sleep-pill {
   position: relative;
 }
 
-.sleep-pill::before {
-  content: '';
+.sleep-pill-halo,
+.sleep-pill-ring {
   position: absolute;
-  inset: -13px;
   border-radius: inherit;
   pointer-events: none;
-  /* Soft outer glow replacing `box-shadow: 0 0 12px rgba(234,179,8,0.28)`:
-     brightest just past the pill edge, faded out by the halo rim. */
+  will-change: transform, opacity;
+  animation: sleep-breathe 2.4s ease-in-out 4 both;
+}
+
+.sleep-pill-halo {
+  inset: -13px;
+  /* Soft outer glow: brightest just past the pill edge, faded by the rim. */
   background: radial-gradient(
     closest-side,
     transparent 40%,
@@ -1203,20 +1220,12 @@ body::-webkit-scrollbar,
     rgba(234, 179, 8, 0.08) 80%,
     transparent 100%
   );
-  animation: sleep-breathe 2.4s ease-in-out infinite;
-  will-change: transform, opacity;
 }
 
-.sleep-pill::after {
-  content: '';
-  position: absolute;
+.sleep-pill-ring {
   inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  /* Crisp ring replacing `box-shadow: 0 0 0 1px rgba(234,179,8,0.35)`. */
+  /* Crisp ring on top of the button's own border. */
   border: 1px solid rgba(234, 179, 8, 0.35);
-  animation: sleep-breathe 2.4s ease-in-out infinite;
-  will-change: transform, opacity;
 }
 
 @keyframes sleep-breathe {
@@ -1233,17 +1242,19 @@ body::-webkit-scrollbar,
 
 /* P0-pattern idle gate (CountdownPill sets this class when the window is
    hidden or unfocused): freeze the breathe timeline in place — no compositor
-   work while nobody can see the pill, and the resume is pixel-identical. */
-.sleep-pill-suspended::before,
-.sleep-pill-suspended::after {
+   work while nobody can see the pill, and the resume is pixel-identical.
+   Safety net now that the breathe is finite, and still load-bearing for the
+   window of time a breath is actually running. */
+.sleep-pill-suspended .sleep-pill-halo,
+.sleep-pill-suspended .sleep-pill-ring {
   animation-play-state: paused;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .sleep-popover,
   .sleep-badge-pop,
-  .sleep-pill::before,
-  .sleep-pill::after {
+  .sleep-pill-halo,
+  .sleep-pill-ring {
     animation: none !important;
   }
 }
