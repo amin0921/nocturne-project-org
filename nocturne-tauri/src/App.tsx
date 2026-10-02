@@ -611,7 +611,11 @@ export default function App(): JSX.Element {
       key: 'actions',
       header: <span className="sr-only">Actions</span>,
       headerClassName: 'w-14',
-      cellClassName: 'w-14',
+      // overflow-visible overrides the DataTable cell's `overflow-hidden`
+      // (twMerge: later wins): the CSS tooltip bubble is absolutely positioned
+      // to the LEFT of the trash icon and wider than this 56px cell — clipped
+      // here it painted as a mysterious half-cut sliver (owner report).
+      cellClassName: 'w-14 overflow-visible',
       render: (track) => {
         if (!track) return null
         return (

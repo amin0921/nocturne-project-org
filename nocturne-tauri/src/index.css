@@ -1188,44 +1188,30 @@ body::-webkit-scrollbar,
   will-change: transform, opacity;
 }
 
-/* Breathing amber ring on the pill (ring + halo spans, 2.4s).
-   GPU-offload step (2026-10-02): the breathe is now FINITE — 4 iterations,
-   then it rests at the resting keyframe (scale 1 / opacity 0.55, held by
-   fill-mode `both`) instead of looping forever and keeping the compositor
-   awake on the transparent window. CountdownPill re-mounts the two spans
-   (React key) to re-trigger on mount / minute change / window refocus, so
-   no timers or rAF are involved. Both layers are painted ONCE — a 1px
-   border ring and a radial-gradient halo, zero box-shadow anywhere — and
-   the loop only animates transform/opacity on composited layers. */
+/* Breathing amber ring on the pill (2.4s).
+   GPU-offload step (2026-10-02): the breathe is FINITE — 4 iterations, then
+   it rests at the resting keyframe (scale 1 / opacity 0.55, held by fill-mode
+   `both`) instead of looping forever and keeping the compositor awake on the
+   transparent window. CountdownPill re-mounts the span (React key) to
+   re-trigger on mount / minute change / window refocus, so no timers or rAF
+   are involved. The layer is painted ONCE — a 1px border ring, zero
+   box-shadow anywhere — and the loop only animates transform/opacity on a
+   composited layer.
+   Halo-removal step (2026-10-02): the pulsing radial-gradient halo span is
+   gone (owner request) — only the bordered ring remains. */
 .sleep-pill {
   position: relative;
 }
 
-.sleep-pill-halo,
 .sleep-pill-ring {
   position: absolute;
+  inset: 0;
   border-radius: inherit;
   pointer-events: none;
   will-change: transform, opacity;
-  animation: sleep-breathe 2.4s ease-in-out 4 both;
-}
-
-.sleep-pill-halo {
-  inset: -13px;
-  /* Soft outer glow: brightest just past the pill edge, faded by the rim. */
-  background: radial-gradient(
-    closest-side,
-    transparent 40%,
-    rgba(234, 179, 8, 0.26) 55%,
-    rgba(234, 179, 8, 0.08) 80%,
-    transparent 100%
-  );
-}
-
-.sleep-pill-ring {
-  inset: 0;
   /* Crisp ring on top of the button's own border. */
   border: 1px solid rgba(234, 179, 8, 0.35);
+  animation: sleep-breathe 2.4s ease-in-out 4 both;
 }
 
 @keyframes sleep-breathe {
@@ -1245,7 +1231,6 @@ body::-webkit-scrollbar,
    work while nobody can see the pill, and the resume is pixel-identical.
    Safety net now that the breathe is finite, and still load-bearing for the
    window of time a breath is actually running. */
-.sleep-pill-suspended .sleep-pill-halo,
 .sleep-pill-suspended .sleep-pill-ring {
   animation-play-state: paused;
 }
@@ -1253,7 +1238,6 @@ body::-webkit-scrollbar,
 @media (prefers-reduced-motion: reduce) {
   .sleep-popover,
   .sleep-badge-pop,
-  .sleep-pill-halo,
   .sleep-pill-ring {
     animation: none !important;
   }

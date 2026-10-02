@@ -18,13 +18,14 @@ export interface CountdownPillProps {
  * CountdownPill — the ONLY component that ticks. A local 1 Hz interval drives
  * local state, so the countdown never re-renders the PlayerBar or any parent.
  *
- * The breathing amber ring is a pair of absolutely-positioned spans (see
- * index.css `sleep-breathe`): scale 1 -> 1.06, 2.4s ease-in-out, composite-only
- * (transform/opacity, zero box-shadow).
+ * The breathing amber ring is an absolutely-positioned span (see index.css
+ * `sleep-breathe`): scale 1 -> 1.06, 2.4s ease-in-out, composite-only
+ * (transform/opacity, zero box-shadow). The old halo span was removed
+ * (halo-removal step, 2026-10-02) — only the bordered ring remains.
  *
  * GPU-offload step (2026-10-02): the breathe is FINITE — 4 iterations, then
  * the ring rests at the resting keyframe instead of looping forever. It is
- * re-triggered by re-mounting the spans via React `key` (no timers, no rAF)
+ * re-triggered by re-mounting the span via React `key` (no timers, no rAF)
  * on: pill mount, displayed-minute change, and window refocus while armed.
  *
  * Idle-audit fix (2026-10-02): while the window is hidden or unfocused the
@@ -112,9 +113,8 @@ export function CountdownPill({ onClick, className }: CountdownPillProps): JSX.E
         className
       )}
     >
-      {/* Breathe layers — remounted via key to replay the finite 4-breath
+      {/* Breathe ring — remounted via key to replay the finite 4-breath
           cycle on mount / minute change / refocus (see index.css). */}
-      <span aria-hidden key={`halo-${breathEpoch}`} className="sleep-pill-halo" />
       <span aria-hidden key={`ring-${breathEpoch}`} className="sleep-pill-ring" />
       <MoonStar size={12} aria-hidden />
       <span dir="ltr">{label}</span>
