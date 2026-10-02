@@ -636,29 +636,30 @@ export default function App(): JSX.Element {
 
   const addFolder = useCallback(async () => {
     try {
-      // 1. Guard dialog: the native FOLDER picker hides every file inside the
-      // directory ("No items match your search"), which reads as broken to the
-      // user. The approved UX opens an audio-filtered FILE dialog instead: the
-      // user sees their tracks, picks any one inside the target folder, and
-      // Rust resolves its parent as the recursive scan root.
-      // No UI state mutations happen until a file is actually chosen.
-      const picked = await invoke<string | null>('pick_folder_via_file')
+      // 1. Native DIRECTORY picker (`pick_folder` → tauri-plugin-dialog with
+      // directory mode): the user selects the target folder itself (e.g.
+      // "songs") and confirms via the native "Select Folder" button — no file
+      // filter, no need to navigate inside or pick an audio file. No UI state
+      // mutations happen until a folder is actually chosen — cancel is a
+      // silent no-op.
+      const picked = await invoke<string | null>('pick_folder')
       if (!picked) {
         // User cancelled dialog — zero state mutations, zero queries, zero loading indicators
         return
       }
 
-      // 2. File confirmed: activate scanning state and live feedback. The Rust
-      // side (`resolve_folder_root`) resolves the picked track's parent folder
-      // and scans it recursively — `scan_folder` accepts both forms.
+      // 2. Folder confirmed: instant notice so the click visibly registers,
+      // then live feedback. The Rust side (`resolve_folder_root`) canonicalizes
+      // the directory (or falls back to the parent if an edge-case file path
+      // arrives) and `scan_folder` walks it recursively.
       setScanning(true)
-      setNotice('Scanning audio files...')
+      setNotice('Starting folder scan...')
       setScanProgress(null)
 
       const unlisten = await listen<{ scanned: number; total: number }>('scan-progress', (event) => {
         setScanProgress(event.payload)
         if (event.payload && event.payload.total > 0) {
-          setNotice(`Scanning audio files (${event.payload.scanned} of ${event.payload.total})...`)
+          setNotice(`Scanning ${event.payload.scanned} of ${event.payload.total}...`)
         }
       })
 

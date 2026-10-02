@@ -9,9 +9,9 @@ use commands::{
     delete_cached_lyrics, delete_named_session, delete_track, get_listening_history,
     get_listening_stats, get_lyric_offset, get_lyrics, get_named_session, get_queue_checkpoint,
     get_track_play_count, get_tracks, import_audio_files, ingest_paths, list_saved_sessions,
-    mark_checkpoint_clean_exit, open_music_folder, open_music_folder_via_file, pick_audio_files,
-    pick_folder, pick_folder_via_file, record_listening_history, record_play, reveal_in_explorer,
-    save_cached_lyrics, save_named_session, save_queue_checkpoint, scan_folder, set_lyric_offset,
+    mark_checkpoint_clean_exit, open_music_folder, pick_audio_files, pick_folder,
+    record_listening_history, record_play, reveal_in_explorer, save_cached_lyrics,
+    save_named_session, save_queue_checkpoint, scan_folder, set_lyric_offset,
 };
 use db::{open_db, DbState};
 use std::sync::Mutex;
@@ -168,9 +168,7 @@ fn main() {
     builder
         .invoke_handler(tauri::generate_handler![
             open_music_folder,
-            open_music_folder_via_file,
             pick_folder,
-            pick_folder_via_file,
             pick_audio_files,
             import_audio_files,
             ingest_paths,

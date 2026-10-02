@@ -43,13 +43,17 @@ struct ScanProgressPayload {
     total: usize,
 }
 
-/// Native folder picker dialog. Returns Some(path) or None if user cancels.
+/// Native DIRECTORY picker dialog for the "Add Folder" flow (IFileDialog with
+/// FOS_PICKFOLDERS): the user selects the target folder itself — no file
+/// filter, no need to enter the folder or pick an audio file — and the
+/// returned path goes to `scan_folder`, which canonicalizes it in Rust and
+/// walks it recursively. Returns Some(path) or None if user cancels.
 #[tauri::command]
 pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     let picked = app
         .dialog()
         .file()
-        .set_title("Select your music folder")
+        .set_title("Select Folder to Add to Library")
         .blocking_pick_folder();
     let Some(file_path) = picked else {
         return Ok(None);
@@ -58,24 +62,22 @@ pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
-/// Audio extension allowlist for the folder-picking dialog. `flac` is listed
-/// so FLAC libraries surface in the picker: picking a FLAC resolves its parent
-/// folder as the scan root (the walk itself still imports only
-/// `scanner::SUPPORTED_EXTS`, so FLAC files are catalogued-then-skipped, and
-/// the sibling mp3/wav/m4a/aac tracks import normally).
+/// Audio extension allowlist for the file-path fallback in `resolve_folder_root`.
+/// `flac` is listed so an edge-case file path (e.g. from drag-and-drop or a
+/// legacy caller) still resolves its parent folder as the scan root (the walk
+/// itself still imports only `scanner::SUPPORTED_EXTS`, so FLAC files are
+/// catalogued-then-skipped, and the sibling mp3/wav/m4a/aac tracks import
+/// normally).
 const PICK_FOLDER_EXTS: &[&str] = &["mp3", "wav", "m4a", "aac", "flac"];
 
 /// Resolves the ingest root for the "Add Folder" flow.
 ///
-/// The Windows folder picker (IFileDialog with FOS_PICKFOLDERS) hides every
-/// file, which makes a music folder look empty. The approved UX instead opens
-/// a *file* dialog filtered to audio: the user sees the supported tracks and
-/// picks any one of them, and its canonical parent folder becomes the scan
-/// root. A real directory (e.g. from drag-and-drop or future callers) still
-/// works and is used as-is.
+/// The primary path is a genuine directory pick: the returned path IS the scan
+/// root and is used as-is. As a fallback, a file path (e.g. from drag-and-drop
+/// or an older caller) resolves to its canonical parent folder.
 ///
 /// Validation is strict, in Rust only: `..` escapes are rejected, the path is
-/// canonicalized, and the picked file must carry a supported audio extension.
+/// canonicalized, and a picked file must carry a supported audio extension.
 pub fn resolve_folder_root(raw: &str) -> Result<PathBuf, String> {
     let clean = raw.trim().to_string();
     if clean.is_empty() || clean.contains("..") {
@@ -105,36 +107,12 @@ pub fn resolve_folder_root(raw: &str) -> Result<PathBuf, String> {
     Ok(parent)
 }
 
-/// Native audio file picker for the "Add Folder" button.
-///
-/// The native folder-only dialog hides every file inside the directory ("No
-/// items match your search"), which reads as broken. The approved UX is:
-/// show the supported audio tracks (.mp3/.wav/.m4a/.aac/.flac) with an
-/// explicit title, let the user pick any single one inside the target folder —
-/// its containing folder is then scanned recursively via `scan_folder`.
-/// Returns None if user cancels.
-#[tauri::command]
-pub async fn pick_folder_via_file(app: AppHandle) -> Result<Option<String>, String> {
-    let picked = app
-        .dialog()
-        .file()
-        .set_title("Select any music file in folder to import entire folder")
-        .add_filter("Audio Files", PICK_FOLDER_EXTS)
-        .add_filter("All Files", &["*"])
-        .blocking_pick_file();
-    let Some(file_path) = picked else {
-        return Ok(None);
-    };
-    let path = file_path.into_path().map_err(|e| e.to_string())?;
-    Ok(Some(path.to_string_lossy().to_string()))
-}
-
 /// Recursively scans a selected folder into the SQLite database with progress events.
 /// Runs on a blocking worker thread; reports inserted vs. deduplicated-skip counts.
 ///
-/// `path` may be a directory or a single supported audio file inside the target
-/// folder (the "Add Folder" file-picker flow): `resolve_folder_root` validates
-/// and resolves the canonical scan root in Rust either way.
+/// `path` is normally a directory picked via `pick_folder`; as a fallback a
+/// single supported audio file path is accepted too — `resolve_folder_root`
+/// validates and resolves the canonical scan root in Rust either way.
 #[tauri::command]
 pub async fn scan_folder(app: AppHandle, path: String) -> Result<ImportResultDto, String> {
     // Canonicalize + validate + parent-resolve: all in Rust, never the webview.
@@ -152,7 +130,7 @@ pub async fn scan_folder(app: AppHandle, path: String) -> Result<ImportResultDto
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DbState>();
         let emitter = app.clone();
-        scan_folder_into_db_full(
+        let outcome = scan_folder_into_db_full(
             &state,
             &root,
             Some(&covers_dir),
@@ -162,7 +140,14 @@ pub async fn scan_folder(app: AppHandle, path: String) -> Result<ImportResultDto
                     ScanProgressPayload { scanned: done, total },
                 );
             }),
-        )
+        )?;
+        eprintln!(
+            "[nocturne] scan_folder finished: root={}, indexed {} track(s), {} skipped",
+            root.display(),
+            outcome.inserted,
+            outcome.skipped
+        );
+        Ok(outcome)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -178,20 +163,6 @@ pub async fn open_music_folder(app: AppHandle) -> Result<Option<ImportResultDto>
         return Ok(None);
     };
     let result = scan_folder(app, folder).await?;
-    Ok(Some(result))
-}
-
-/// "Add Folder" end-to-end: audio-file picker (files visible) → resolve the
-/// picked file's parent folder → recursive scan → SQLite persist. Returns None
-/// if user cancels the dialog, or the import result.
-#[tauri::command]
-pub async fn open_music_folder_via_file(app: AppHandle) -> Result<Option<ImportResultDto>, String> {
-    let picked = pick_folder_via_file(app.clone()).await?;
-    let Some(picked_path) = picked else {
-        return Ok(None);
-    };
-    let folder = resolve_folder_root(&picked_path)?;
-    let result = scan_folder(app, folder.to_string_lossy().to_string()).await?;
     Ok(Some(result))
 }
 
