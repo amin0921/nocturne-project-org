@@ -615,7 +615,12 @@ export default function App(): JSX.Element {
       // (twMerge: later wins): the CSS tooltip bubble is absolutely positioned
       // to the LEFT of the trash icon and wider than this 56px cell — clipped
       // here it painted as a mysterious half-cut sliver (owner report).
-      cellClassName: 'w-14 overflow-visible',
+      // `isolate` (stacking context) is the second half of the fix: without
+      // it the unclipped cell's region painted in Chromium's late content
+      // phase, letting the hovered row's background wash over the PREVIOUS
+      // row's collapsed border — the divider looked bolder right above the
+      // trash icon (verified by pixel sampling; see divider step report).
+      cellClassName: 'w-14 overflow-visible isolate',
       render: (track) => {
         if (!track) return null
         return (
