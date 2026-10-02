@@ -34,7 +34,8 @@ function findActivePreviewLine<T extends { time: number }>(lines: T[], previewTi
 }
 
 export interface WaveformSeekerProps {
-  /** Normalized peaks, 0..1. If empty, renders an idle shimmer placeholder. */
+  /** Normalized peaks, 0..1. If empty, renders a placeholder waveform that
+   *  dances while playing and freezes while paused. */
   peaks?: number[]
   /** Playback progress 0..1 */
   progress: number
@@ -49,14 +50,17 @@ export interface WaveformSeekerProps {
 /**
  * WaveformSeeker Component
  * Replaces linear slider with dynamic SVG frequency bars and ember glow.
- * Supports pointer scrub seeking, hover timestamp tooltip, and idle shimmer placeholder.
+ * Supports pointer scrub seeking, hover timestamp tooltip, and a placeholder
+ * waveform when no peaks data exists: the placeholder bars dance while
+ * `isPlaying` and freeze in place while paused (playback-gate step,
+ * 2026-10-02).
  */
 export function WaveformSeeker({
   peaks,
   progress,
   currentTime,
   duration,
-  isPlaying: _isPlaying,
+  isPlaying,
   onSeek,
   className,
   lyrics: propsLyrics
@@ -82,13 +86,12 @@ export function WaveformSeeker({
   const slot = VIEW_W / bars.length
   const barW = Math.max(2, slot * 0.55)
 
-  // P0 idle-CPU fix: the idle placeholder runs BAR_COUNT (72) infinite CSS
-  // animations. They keep ticking whenever the window merely exists, so the
-  // shimmer is frozen while the document is hidden or the window is unfocused
-  // (covered/idle/on another app) and resumes from the exact same frame on
-  // return — `animation-play-state` pauses the timeline, it does not restart
-  // it, so the visible state is pixel-identical to before. State changes only
-  // on visibility/focus transitions, never per frame.
+  // Playback-gate fix (2026-10-02): with no peaks data the bars carry the
+  // `waveform-idle-bar` animation ONLY while `isPlaying` — paused playback
+  // binds inline `animation-play-state: paused`, so zero animations run on the
+  // compositor (the 0% idle benchmark). When playing, the play state is NOT
+  // bound inline on purpose: an inline "running" would override the stylesheet
+  // rule below, breaking the hidden/blur suspension guard.
   const [shimmerSuspended, setShimmerSuspended] = useState(false)
   useEffect(() => {
     const sync = (): void => {
@@ -298,7 +301,14 @@ export function WaveformSeeker({
                 height={h}
                 rx={barW / 2}
                 className={cn(idle && 'waveform-idle-bar')}
-                style={idle ? { animationDelay: `${(i % 12) * 0.09}s` } : undefined}
+                style={
+                  idle
+                    ? {
+                        animationDelay: `${(i % 12) * 0.09}s`,
+                        animationPlayState: isPlaying ? undefined : 'paused'
+                      }
+                    : undefined
+                }
                 fill={played ? '#EAB308' : hovered ? 'rgba(234,179,8,0.55)' : 'rgba(148,163,184,0.3)'}
                 opacity={played ? 1 : 0.85}
               />
