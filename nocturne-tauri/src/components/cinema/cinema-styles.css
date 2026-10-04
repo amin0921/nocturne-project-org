@@ -198,11 +198,18 @@
               filter 350ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Bottom transport bar: centered via inset-0 + margin auto, NOT via
+   translateX(-50%). Transform-based centering breaks whenever a transform
+   override lands on this element (e.g. the prefers-reduced-motion
+   `transform: none !important` below left the bar's left edge pinned at 50%,
+   shoving it bottom-right). Inset centering is immune to any transform state. */
 .stage-chrome {
   position: absolute;
   bottom: 2rem;
-  left: 50%;
-  transform: translateX(-50%) translateY(0);
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  transform: translateY(0);
   z-index: 30;
   width: min(680px, 92vw);
   opacity: 1;
@@ -228,7 +235,7 @@
 .cinema-stage[data-idle="true"] .stage-chrome {
   opacity: 0;
   visibility: hidden;
-  transform: translateX(-50%) translateY(8px);
+  transform: translateY(8px);
   filter: blur(2px);
   pointer-events: none;
 }
