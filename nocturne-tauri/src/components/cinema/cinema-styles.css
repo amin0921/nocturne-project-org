@@ -12,8 +12,12 @@
   background: var(--cs-bg);
   z-index: 50;
   user-select: none;
-  transition: border-radius 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-              border 0.3s ease;
+  /* GEOMETRY INTERPOLATION FORBIDDEN (same policy as .nocturne-shell). This
+     rule used to animate `border-radius`/`border` over 300ms — so on every
+     fullscreen enter/exit the native window snapped to its new bounds in one
+     frame while the stage's rounded mask lagged 300ms behind, leaving the
+     corners/edges visibly cut or half-drawn before snapping. Radius and border
+     now switch with the layout, in the same frame as the DWM buffer. */
 }
 
 /* Fullscreen Mode: Expand to Full Bleed with Zero Radius */
@@ -90,24 +94,31 @@
   z-index: 10;
 }
 
-/* Artwork Wrapper: Holds the shadow isolated from -webkit-box-reflect to eliminate sharp clipping */
+/* Artwork Wrapper: Holds the shadow isolated from -webkit-box-reflect to eliminate sharp clipping.
+   max-width keeps the wrap inside its 50% grid bay at every viewport width. */
 .stage-art-wrap {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: visible;
+  max-width: 100%;
   border-radius: 18px;
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.60), 0 0 0 1px rgba(255, 255, 255, 0.08);
   background-color: #121419;
 }
 
-/* Cover Image with 1:1 Aspect Ratio, Rounded 18px & Clean Mirror Reflection */
+/* Cover Image with 1:1 Aspect Ratio, Rounded 18px & Clean Mirror Reflection.
+   Fluid sizing ONLY — the former `min-width: 260px` floor overruled 38vw on
+   windows narrower than ~684px and pushed the art 20-30px past its grid bay
+   (over the lyrics bay / clipped by the stage edge), exactly the half-cover
+   split seen when restoring to a small window. max-width: 100% + min-width: 0
+   let the bay clamp the square via aspect-ratio instead. */
 .stage-art {
   aspect-ratio: 1;
   width: min(38vw, 52vh);
-  max-width: 500px;
-  min-width: 260px;
+  max-width: min(500px, 100%);
+  min-width: 0;
   border-radius: 18px;
   box-shadow: none; /* Isolated on .stage-art-wrap to prevent box-reflect clipping */
   -webkit-box-reflect: below 8px linear-gradient(transparent 55%, rgba(0, 0, 0, 0.45));
