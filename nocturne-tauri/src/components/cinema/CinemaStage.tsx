@@ -549,6 +549,7 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
                 onClick={() => togglePlay()}
                 className="w-14 h-14 rounded-full shrink-0 aspect-square flex items-center justify-center bg-[#f59e0b] text-[#0D0F15] shadow-[0_0_24px_rgba(245,158,11,0.45)] hover:brightness-105 transition-colors focus-visible:outline-none select-none"
                 aria-label={isPlaying ? 'Pause' : 'Play'}
+                aria-pressed={isPlaying}
                 title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
               >
                 {isPlaying ? (
