@@ -454,6 +454,12 @@ body::-webkit-scrollbar,
   max-height: 100vh;
   max-width: 100vw;
   overflow: hidden;
+  /* Layout + size containment: the shell's box is always 100vw/100vh, so its
+     descendants can never influence its geometry. During maximize/restore the
+     HWND frame snaps in one step; containment keeps that reflow a single
+     self-contained pass instead of letting inner grid churn re-invalidate the
+     viewport-sized box across multiple compositor frames. */
+  contain: layout size;
   box-sizing: border-box;
   padding: 1rem;
   gap: 1rem;
@@ -557,12 +563,53 @@ body::-webkit-scrollbar,
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* CORNER PRESERVATION DURING WINDOW BOUNDS CHANGES. Each island becomes its
+     own stacking context (and therefore its own compositor grouping): when
+     DWM stretches/reallocates the transparent window buffer on maximize,
+     restore or drag-resize, Chromium re-rasterizes the island's rounded clip
+     at the new bounds instead of scaling a stale flattened texture whose
+     radius mask was dropped. `contain: layout` additionally fences the
+     island's internal layout from its siblings. */
+  isolation: isolate;
+  contain: layout;
+  /* Nothing on an island may animate geometry or the 24px backdrop blur:
+     animating either during a window resize is what desyncs the DOM box from
+     the already-snapped DWM buffer (corner flattening + content tearing).
+     Only the opacity crossfade (below) is allowed. */
 }
 
+/* Stage & queue islands already hard-clip their contents, so paint
+   containment is a strict upgrade with zero visual change: Chromium clips
+   `contain: paint` boxes at the *rounded* border edge with antialiasing,
+   which keeps the 1.5rem corner masks intact even while the GPU layer is
+   being stretched across a resize transition. */
+.island-stage,
+.island-queue {
+  contain: layout paint;
+}
+
+/* The player capsule intentionally keeps `overflow: visible` (the amber aura
+   pulse paints up to 8px past the border, see the play-aura-pulse budget
+   below) and therefore must NOT get paint containment — it would clip the
+   aura and flatten the amber accent. `isolation: isolate` from the shared
+   block is its corner-preservation mechanism instead. */
 .island-player {
   overflow: visible !important;
   z-index: 40 !important;
   position: relative;
+}
+
+/* TRANSIENT RESIZE SUSPENSION — armed by App.tsx while the native window is
+   changing bounds, removed ~150ms after the last resize event. With every
+   transition suppressed, every descendant snaps to the new viewport in the
+   same frame the DWM buffer is reallocated: nothing interpolates toward a
+   geometry the window no longer has (the queue island / PlayerBar clipping
+   bug), and rounded corners are re-masked at the final size immediately. */
+.nocturne-shell.is-resizing,
+.nocturne-shell.is-resizing *,
+.nocturne-shell.is-resizing *::before,
+.nocturne-shell.is-resizing *::after {
+  transition: none !important;
 }
 
 .island-dock > nav,

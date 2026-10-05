@@ -103,6 +103,7 @@ export default function App(): JSX.Element {
   const [isCoverViewOpen, setIsCoverViewOpen] = useState(false)
   const [dockExpanded, setDockExpanded] = useState(false)
   const [isMaximized, setIsMaximized] = useState(false)
+  const [isResizing, setIsResizing] = useState(false)
   const [dropActive, setDropActive] = useState(false)
   const [deduping, setDeduping] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -136,9 +137,26 @@ export default function App(): JSX.Element {
     syncMaximized()
     const unlistenPromise = win.onResized(syncMaximized)
 
+    // TRANSIENT RESIZE SUSPENSION. While the native frame is changing bounds
+    // (maximize, restore, drag-resize), `.is-resizing` on the shell kills every
+    // CSS transition inside it (see the `.nocturne-shell.is-resizing` rule in
+    // index.css) so all descendants snap to the new viewport in the same frame
+    // the DWM buffer is reallocated. It is removed ~150ms after the LAST resize
+    // event, letting opacity fades resume once the geometry is settled.
+    // setIsResizing(true) on an already-true state is a React bailout, so this
+    // adds at most two re-renders per bounds transition (arm + settle).
+    let resizeSettleTimer: ReturnType<typeof setTimeout> | null = null
+    const unlistenResizeSuspension = win.onResized(() => {
+      setIsResizing(true)
+      if (resizeSettleTimer) clearTimeout(resizeSettleTimer)
+      resizeSettleTimer = setTimeout(() => setIsResizing(false), 150)
+    })
+
     return () => {
       active = false
+      if (resizeSettleTimer) clearTimeout(resizeSettleTimer)
       unlistenPromise.then((unlisten) => unlisten()).catch(() => {})
+      unlistenResizeSuspension.then((unlisten) => unlisten()).catch(() => {})
     }
   }, [])
 
@@ -1017,7 +1035,9 @@ export default function App(): JSX.Element {
           // on Windows 10/11 leaves the content inset from the frame, so the
           // rule bumps the shell padding from 1rem to 1.5rem. macOS has no such
           // offset, so the class is withheld there and the base padding applies.
-          isMaximized && !IS_MACOS && 'is-maximized'
+          isMaximized && !IS_MACOS && 'is-maximized',
+          // Bounds-transition suspension: see `.nocturne-shell.is-resizing`.
+          isResizing && 'is-resizing'
         )}
       >
         {/* Floating Window Controls in top-right */}
