@@ -1,6 +1,6 @@
 [package]
 name = "nocturne"
-version = "0.1.2"
+version = "0.1.4"
 description = "Nocturne — offline-first minimal dark Windows music player"
 authors = ["Nocturne"]
 edition = "2021"
