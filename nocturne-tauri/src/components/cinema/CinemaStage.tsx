@@ -2,8 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Disc3,
-  Maximize2,
-  Minimize2,
   Minus,
   MicVocal,
   Pause,
@@ -30,7 +28,6 @@ import { resolveCoverUrl } from '../../utils/cover-url'
 import { formatTime } from '../../lib/utils'
 import { WindowGripPill } from '../WindowGripPill'
 import { useLyricOffset } from '../../stores/useLyricOffset'
-import { useFullscreen } from './useFullscreen'
 import { useIdle } from './useIdle'
 import { flipEnter } from './flipEnter'
 import './cinema-styles.css'
@@ -49,10 +46,9 @@ export interface CinemaStageProps {
  * - Deep album art with mirror floor reflection.
  * - Synced bold (font-black 900) lyrics auto-scrolling to 37% viewport height.
  * - 2000ms idle detection: controls and mouse cursor dissolve seamlessly.
- * - Keyboard transport: Space (play/pause), F (fullscreen), Esc (exit), Left/Right (seek).
+ * - Keyboard transport: Space (play/pause), Esc (exit), Left/Right (seek).
  */
 export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
-  const stageRef = useRef<HTMLDivElement>(null)
   const coverRef = useRef<HTMLImageElement>(null)
   const lyricsContainerRef = useRef<HTMLDivElement>(null)
 
@@ -95,9 +91,6 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
     return () => cancelAnimationFrame(rafId)
   }, [isPlaying, currentTime])
 
-  // Fullscreen management
-  const { isFs, toggle: toggleFs, exit: exitFs } = useFullscreen(stageRef)
-
   // 2000ms idle detection with 250ms throttling
   const isIdle = useIdle(2000, 250)
 
@@ -108,15 +101,15 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
     }
   }, [])
 
-  // Close handler: ensure exiting fullscreen before closing overlay
+  // Close handler: defensively leave any native element-fullscreen (e.g. F11)
+  // before closing the overlay. Stage-level fullscreen toggling was removed —
+  // window bounds are owned by the shell's global window controls.
   const handleClose = useCallback(() => {
     if (document.fullscreenElement) {
       void document.exitFullscreen()
-    } else if (isFs) {
-      void exitFs()
     }
     onClose()
-  }, [isFs, exitFs, onClose])
+  }, [onClose])
 
   // Purge a wrong/mismatched cached .lrc beside the current track
   const handleDeleteLyrics = useCallback(async () => {
@@ -203,15 +196,6 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
         return
       }
 
-      // F: Toggle Fullscreen
-      if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault()
-        e.stopPropagation()
-        e.stopImmediatePropagation()
-        void toggleFs()
-        return
-      }
-
       // Space: Toggle Play/Pause
       if (e.key === ' ' || e.code === 'Space') {
         e.preventDefault()
@@ -254,7 +238,7 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
     // Attach in capture phase to completely isolate CinemaStage from window-level hotkeys
     window.addEventListener('keydown', handleKeyDown, true)
     return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [toggleFs, handleClose, duration, currentTime])
+  }, [handleClose, duration, currentTime])
 
   // Metadata slot text — every fallback keeps a line occupied so the fixed-height
   // slot below the cover never changes height (zero vertical cover drift).
@@ -268,12 +252,10 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
   return (
     <>
       <div
-        ref={stageRef}
         role="dialog"
         aria-modal="true"
         aria-label="Cinema Stage"
         data-idle={isIdle}
-        data-fullscreen={isFs}
         className="stage cinema-stage font-sans"
       >
         {/* 1. Atmospheric Album Art Backdrop Glow */}
@@ -372,17 +354,6 @@ export function CinemaStage({ onClose }: CinemaStageProps): JSX.Element {
             title="Minimize"
           >
             <Minus size={14} aria-hidden />
-          </button>
-
-          {/* Fullscreen Toggle Button */}
-          <button
-            type="button"
-            onClick={() => void toggleFs()}
-            className="flex h-7 w-7 items-center justify-center rounded-lg text-faint transition-colors hover:bg-white/10 hover:text-ink focus-visible:outline-none"
-            aria-label={isFs ? 'Exit fullscreen (F)' : 'Enter fullscreen (F)'}
-            title={isFs ? 'Exit Fullscreen (F)' : 'Fullscreen (F)'}
-          >
-            {isFs ? <Minimize2 size={13} aria-hidden /> : <Maximize2 size={13} aria-hidden />}
           </button>
 
           {/* Close Cinema Stage Button */}

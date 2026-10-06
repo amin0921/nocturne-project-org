@@ -94,7 +94,9 @@ export function VinylOrbit({
       {/* ---- the sleeve: stays on top ---- */}
       <div
         className={cn(
-          'absolute inset-0 z-10 overflow-hidden rounded-xl border border-white/10 bg-[#121419] shadow-2xl transition-all duration-200',
+          // inset-0 tracks the island box: compositor properties only
+          // (nocturne-motion §1) — no transition-all.
+          'absolute inset-0 z-10 overflow-hidden rounded-xl border border-white/10 bg-[#121419] shadow-2xl transition-[transform,border-color] duration-200',
           onClick && 'group-hover:border-ember/50 group-hover:scale-[1.02]'
         )}
       >

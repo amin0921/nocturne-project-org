@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { emit, listen } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow, monitorFromPoint } from '@tauri-apps/api/window'
@@ -528,6 +528,16 @@ export default function App(): JSX.Element {
   // with a typing-focus guard so the library search field stays untouched.
   useStudioHotkeys()
 
+  // Emergency restore (Patch 205): the void-passthrough experiment (Patch 204)
+  // was reverted after it left the window stuck in WS_EX_TRANSPARENT. Enforce
+  // cursor interactivity unconditionally on mount so the app can never start
+  // (or hot-reload) with clicks passing through to the desktop.
+  useEffect(() => {
+    void getCurrentWindow()
+      .setIgnoreCursorEvents(false)
+      .catch(() => {})
+  }, [])
+
   const [query, setQuery] = useState('')
 
   const filtered = useMemo(() => {
@@ -883,8 +893,23 @@ export default function App(): JSX.Element {
    * call resolves, so the DOM reflows in the same frame as the click instead of
    * trailing the OS animation. A failed toggle re-syncs from the real state.
    */
+  const boundsFreezeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const handleToggleMaximize = useCallback(async () => {
     const win = getCurrentWindow()
+    // SYNCHRONOUS bounds freeze (accordion-crumple fix): arm
+    // `nocturne-bounds-freeze` on <html> in the same tick as the click,
+    // BEFORE the toggle IPC leaves the webview. The async onResized
+    // suspension below can only fire after the DWM buffer has already
+    // snapped, which is exactly the window where `transition-all` elements
+    // tracking the viewport interpolated their boxes. 250ms covers the
+    // resize settle; the async `.is-resizing` net still handles drag-resize
+    // and Aero-Snap paths that bypass this button.
+    document.documentElement.classList.add('nocturne-bounds-freeze')
+    if (boundsFreezeTimerRef.current) clearTimeout(boundsFreezeTimerRef.current)
+    boundsFreezeTimerRef.current = setTimeout(() => {
+      document.documentElement.classList.remove('nocturne-bounds-freeze')
+      boundsFreezeTimerRef.current = null
+    }, 250)
     try {
       const next = !(await win.isMaximized())
       setIsMaximized(next)

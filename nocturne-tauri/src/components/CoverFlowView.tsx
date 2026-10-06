@@ -341,7 +341,11 @@ export default function CoverFlowView({
                     className={cn(
                       'absolute top-1/2 left-1/2',
                       'w-64 h-64 md:w-80 md:h-80',
-                      'cursor-pointer transition-all duration-300 ease-out select-none'
+                      // Compositor-only: the md: breakpoint changes this box's
+                      // fixed size, and the element is placed via transform —
+                      // `transition-all` would interpolate width/position
+                      // during window bounds changes (accordion crumple).
+                      'cursor-pointer transition-[transform,opacity] duration-300 ease-out select-none'
                     )}
                     aria-label={`${trackTitle} by ${trackArtist}`}
                     role="button"
@@ -351,7 +355,9 @@ export default function CoverFlowView({
                     {isCenter && (
                       <div
                         className={cn(
-                          'absolute right-0 top-4 h-[calc(100%-2rem)] w-[calc(100%-2rem)] rounded-full border border-white/10 bg-[#0A0B0E] shadow-2xl transition-all duration-500',
+                          // calc(100%) size tracks its parent box — compositor
+                          // properties only (nocturne-motion §1).
+                          'absolute right-0 top-4 h-[calc(100%-2rem)] w-[calc(100%-2rem)] rounded-full border border-white/10 bg-[#0A0B0E] shadow-2xl transition-[transform,opacity] duration-500',
                           isSelectedTrackPlaying
                             ? 'translate-x-12 animate-vinyl-spin opacity-95'
                             : 'translate-x-0 opacity-0 pointer-events-none'
@@ -376,7 +382,9 @@ export default function CoverFlowView({
                         textRendering: 'optimizeLegibility'
                       }}
                       className={cn(
-                        'relative h-full w-full overflow-hidden rounded-2xl border transition-all duration-300',
+                        // h-full w-full tracks the parent box: colors/shadow
+                        // only — no transition-all.
+                        'relative h-full w-full overflow-hidden rounded-2xl border transition-[border-color,box-shadow] duration-300',
                         'bg-gradient-to-b from-[#1A1E27] to-[#121419]',
                         isCenter
                           ? 'border-ember/70 shadow-[0_0_50px_-10px_rgba(234,179,8,0.4)]'

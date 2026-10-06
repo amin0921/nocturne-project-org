@@ -201,6 +201,15 @@ body::-webkit-scrollbar,
   animation: nocturne-modal-in 150ms ease-out;
 }
 
+/* Passthrough + non-blocking guard (nocturne-ui-spec §2/§4.4): the alert
+   overlay sits over a fully transparent frameless window — it must never
+   paint the OS window rectangle NOR capture clicks outside the dialog card
+   (the card itself re-enables pointer-events). */
+.vf-modal-overlay {
+  background: transparent !important;
+  pointer-events: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .vf-modal-overlay {
     animation: none;
@@ -252,7 +261,8 @@ body::-webkit-scrollbar,
   height: 4px;
   border-radius: 9999px;
   background: linear-gradient(to right, #eab308 var(--vf-p, 0%), #232936 var(--vf-p, 0%));
-  transition: height 120ms ease;
+  /* Height transition removed (nocturne-motion §1: never animate layout).
+     The hover thickness change now snaps — the 1px delta is imperceptible. */
 }
 
 .vf-slider:hover::-webkit-slider-runnable-track {
@@ -422,7 +432,14 @@ body::-webkit-scrollbar,
 .waveform-idle-bar {
   transform-box: fill-box;
   transform-origin: center;
-  animation: waveform-idle 1.2s ease-in-out infinite;
+  /* 1.9s period + ease-in-out pairs with the 38ms-per-bar spatial phase in
+     WaveformSeeker (adjacent bars trail ~7° apart) so the idle cycle reads as
+     one fluid traveling wave. */
+  animation: waveform-idle 1.9s ease-in-out infinite;
+  /* `both` + the negative inline delays keeps bars in their mid-cycle phase
+     from the first painted frame — no flat baseline flash before the cycle
+     starts. */
+  animation-fill-mode: both;
 }
 
 /* Hidden/blur suspension (P0 guard, live again since the playback-gate step):
@@ -609,6 +626,20 @@ body::-webkit-scrollbar,
 .nocturne-shell.is-resizing *,
 .nocturne-shell.is-resizing *::before,
 .nocturne-shell.is-resizing *::after {
+  transition: none !important;
+}
+
+/* SYNCHRONOUS bounds freeze (accordion-crumple fix). `.is-resizing` above is
+   armed by async onResized IPC, which arrives at least one frame AFTER the
+   DWM buffer has already snapped on maximize/restore — long enough for any
+   `transition-all` element tracking the viewport to interpolate its box and
+   crumple like an accordion. `handleToggleMaximize` adds this class to <html>
+   in the same tick as the click, BEFORE the toggle IPC is even sent, so every
+   descendant is transition-dead the instant the native frame resizes. */
+html.nocturne-bounds-freeze .nocturne-shell,
+html.nocturne-bounds-freeze .nocturne-shell *,
+html.nocturne-bounds-freeze .nocturne-shell *::before,
+html.nocturne-bounds-freeze .nocturne-shell *::after {
   transition: none !important;
 }
 

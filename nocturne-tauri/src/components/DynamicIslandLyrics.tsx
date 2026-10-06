@@ -145,7 +145,9 @@ export function DynamicIslandLyrics({
             if (!isExpanded) setExpanded(true)
           }}
           className={cn(
-            'absolute inset-0 flex items-center justify-center gap-2 px-3 transition-all duration-150',
+            // inset-0 tracks the island box: compositor properties only
+            // (nocturne-motion §1) — no transition-all.
+            'absolute inset-0 flex items-center justify-center gap-2 px-3 transition-[opacity,transform] duration-150',
             isExpanded
               ? 'opacity-0 pointer-events-none scale-90'
               : 'opacity-100 pointer-events-auto scale-100'

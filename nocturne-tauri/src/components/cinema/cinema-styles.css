@@ -20,11 +20,12 @@
      now switch with the layout, in the same frame as the DWM buffer. */
 }
 
-/* Fullscreen Mode: Expand to Full Bleed with Zero Radius */
+/* Native element-fullscreen fallback (e.g. F11): expand to full bleed with
+   zero radius. The stage-level fullscreen toggle and its data-fullscreen
+   attribute were removed — window bounds are owned by the shell's global
+   window controls. */
 .stage:fullscreen,
-.cinema-stage:fullscreen,
-.stage[data-fullscreen="true"],
-.cinema-stage[data-fullscreen="true"] {
+.cinema-stage:fullscreen {
   inset: 0 !important;
   border-radius: 0 !important;
   border: none !important;

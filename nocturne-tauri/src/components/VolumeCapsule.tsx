@@ -222,9 +222,12 @@ export function VolumeCapsule({ className }: VolumeCapsuleProps): JSX.Element {
         >
           {/* Track background */}
           <div className="h-1.5 w-full rounded-full bg-white/15 overflow-hidden">
-            {/* Active Amber Fill */}
+            {/* Active Amber Fill — width is driven by the volume value and the
+                capsule tracks the PlayerBar box, so no transition here: a
+                layout-property fill would interpolate on maximize/restore
+                (accordion crumple). Continuous drag makes the snap invisible. */}
             <div
-              className="h-full rounded-full bg-ember shadow-[0_0_8px_rgba(234,179,8,0.5)] transition-all duration-75"
+              className="h-full rounded-full bg-ember shadow-[0_0_8px_rgba(234,179,8,0.5)]"
               style={{ width: `${effectiveVolume}%` }}
             />
           </div>

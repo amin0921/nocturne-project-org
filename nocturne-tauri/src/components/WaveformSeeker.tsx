@@ -12,6 +12,28 @@ const BAR_COUNT = 72
 const WHEEL_STEP_SECONDS = 2
 
 /**
+ * Deterministic placeholder envelope (0.35..0.80) for when no peaks data
+ * exists. A single broad arch (sin across the full width) modulated by one
+ * gentle low-frequency swell — no high-order partials, so adjacent bars stay
+ * within a hair of each other and the resting geometry reads as one cohesive
+ * wave rather than a jagged ruler. Computed once at module load: the shape is
+ * static, so there is zero per-render cost.
+ */
+const PLACEHOLDER_PEAKS: number[] = (() => {
+  const raw: number[] = []
+  for (let i = 0; i < BAR_COUNT; i++) {
+    const t = i / BAR_COUNT
+    const arch = Math.sin(t * Math.PI)
+    const swell = 0.78 + 0.22 * Math.sin(2 * Math.PI * t + 1.1)
+    raw.push(arch * swell)
+  }
+  // Normalize to the exact 0.35..0.80 band — the swell factor otherwise
+  // pulls the arch's true peak below target.
+  const rawMax = Math.max(...raw)
+  return raw.map((v) => 0.35 + 0.45 * (v / rawMax))
+})()
+
+/**
  * Binary search for the matching active lyric line.
  * O(log N) lookup ensures silky 60fps/144fps tracking during pointer hover without layout jitter.
  */
@@ -82,7 +104,7 @@ export function WaveformSeeker({
   })
 
   const idle = !peaks || peaks.length === 0
-  const bars = peaks && peaks.length > 0 ? peaks : Array.from({ length: BAR_COUNT }, () => 0.5)
+  const bars = peaks && peaks.length > 0 ? peaks : PLACEHOLDER_PEAKS
   const slot = VIEW_W / bars.length
   const barW = Math.max(2, slot * 0.55)
 
@@ -304,7 +326,11 @@ export function WaveformSeeker({
                 style={
                   idle
                     ? {
-                        animationDelay: `${(i % 12) * 0.09}s`,
+                        // Linear spatial phase: each bar trails its neighbour
+                        // by a fixed 38ms, so the idle cycle propagates as one
+                        // fluid traveling wave across all 72 bars — no chunk
+                        // seams, and mid-cycle at t=0 (no flat cold-boot ramp).
+                        animationDelay: `-${(i * 0.038).toFixed(3)}s`,
                         animationPlayState: isPlaying ? undefined : 'paused'
                       }
                     : undefined

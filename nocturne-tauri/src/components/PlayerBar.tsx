@@ -63,7 +63,7 @@ export default function PlayerBar({ onOpenCoverView }: PlayerBarProps = {}): JSX
           aria-label="Shuffle"
           title={shuffleOn ? 'Disable shuffle' : 'Enable shuffle'}
           className={cn(
-            'relative h-9 w-9 text-muted transition-all duration-150 hover:text-ink',
+            'relative h-9 w-9 text-muted transition-colors duration-150 hover:text-ink',
             'focus:outline-none focus-visible:ring-1 focus-visible:ring-[#EAB308]/40',
             shuffleOn && 'text-ember drop-shadow-[0_0_8px_rgba(234,179,8,0.5)] hover:text-ember'
           )}
@@ -118,7 +118,7 @@ export default function PlayerBar({ onOpenCoverView }: PlayerBarProps = {}): JSX
           title={repeatLabel}
           aria-pressed={mode !== 'normal'}
           className={cn(
-            'relative h-9 w-9 text-muted transition-all duration-150 hover:text-ink',
+            'relative h-9 w-9 text-muted transition-colors duration-150 hover:text-ink',
             'focus:outline-none focus-visible:ring-1 focus-visible:ring-[#EAB308]/40',
             mode !== 'normal' && 'text-ember drop-shadow-[0_0_8px_rgba(234,179,8,0.5)] hover:text-ember'
           )}

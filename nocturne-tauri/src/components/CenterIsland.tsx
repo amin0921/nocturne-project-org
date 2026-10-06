@@ -112,7 +112,7 @@ export function CenterIsland({
           <button
             type="button"
             onClick={() => useUIStore.getState().setCinemaOpen(true)}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#121419]/80 text-muted hover:border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-400 transition-all duration-200 active:scale-95"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-[#121419]/80 text-muted hover:border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-400 transition-colors duration-200 active:scale-95"
             title="Cinema Stage / استیج سینمایی (Shift+F)"
             aria-label="Open Cinema Stage"
           >

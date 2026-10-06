@@ -563,7 +563,10 @@ export function QueuePanel({ onClose, className, onTrackContextMenu, resolveTrac
                       data-settling={isSettling}
                       data-drop-target={isDropTarget}
                       className={cn(
-                        'nq-item relative overflow-visible transition-all duration-150',
+                        // Colors-only: this row tracks the queue column width,
+                        // so `transition-all` here interpolated its box during
+                        // window maximize/restore (accordion crumple).
+                        'nq-item relative overflow-visible transition-colors duration-150',
                         isDragging || isSettling ? 'z-[9999]' : 'z-[1]',
                         isDropTarget && 'rounded-xl bg-amber-500/[0.08] ring-1 ring-amber-500/30'
                       )}
