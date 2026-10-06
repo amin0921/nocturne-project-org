@@ -70,6 +70,29 @@ export function AlertDialog({
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [open, onCancel])
 
+  // Non-blocking dismissal (nocturne-ui-spec): the overlay wrapper is
+  // pointer-events-none, so outside clicks fall through to whatever control
+  // sits underneath. This window listener observes the same pointerdown in
+  // the capture phase — WITHOUT consuming it — so a click on Play/Pause, the
+  // seeker, or any island both dismisses the dialog AND performs that
+  // control's own action.
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (e: PointerEvent): void => {
+      if (pending) return
+      if (
+        panelRef.current &&
+        e.target instanceof Node &&
+        panelRef.current.contains(e.target)
+      ) {
+        return
+      }
+      onCancel()
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => window.removeEventListener('pointerdown', onPointerDown, true)
+  }, [open, pending, onCancel])
+
   if (!open) return null
 
   const handleConfirm = (): void => {
@@ -82,19 +105,20 @@ export function AlertDialog({
   }
 
   return (
-    <div
-      className="vf-modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget && !pending) onCancel()
-      }}
-    >
+    // Passthrough contract (nocturne-ui-spec §2/§4.4): the window is frameless
+    // and fully transparent, and this alert must not block the rest of the
+    // app. The wrapper stays an invisible, non-capturing centering frame
+    // (pointer-events-none — no scrim, no click swallowing); only the glass
+    // card itself is interactive. Outside-click dismissal lives in the window
+    // listener above.
+    <div className="vf-modal-overlay pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
         ref={panelRef}
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="nocturne-alert-title"
         aria-describedby={description ? 'nocturne-alert-description' : undefined}
-        className="vf-modal-panel w-full max-w-sm rounded-xl border border-line bg-surface p-5"
+        className="vf-modal-panel pointer-events-auto w-full max-w-sm rounded-2xl border border-white/10 bg-[#121419]/95 p-6 backdrop-blur-xl"
       >
         <h2 id="nocturne-alert-title" className="text-[15px] font-semibold text-ink">
           {title}
